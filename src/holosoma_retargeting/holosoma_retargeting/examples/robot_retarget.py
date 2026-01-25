@@ -78,7 +78,7 @@ TaskType = Literal["robot_only", "object_interaction", "climbing"]
 
 # ----------------------------- Helper Functions -----------------------------
 
-
+#根据 task_type 填好 OBJECT_NAME/OBJECT_URDF_FILE/OBJECT_MESH_FILE/SCENE_XML_FILE 等“常量”，供 retargeter 和后续流程使用
 def create_task_constants(
     robot_config: RobotConfig,
     motion_data_config: MotionDataConfig,
@@ -130,7 +130,7 @@ def create_task_constants(
 
     return task_constants
 
-
+#校验命令行/配置是否一致
 def validate_config(cfg: RetargetingConfig) -> None:
     """Validate configuration consistency.
 
@@ -156,7 +156,7 @@ def validate_config(cfg: RetargetingConfig) -> None:
         raise ValueError("Object interaction requires 'smplh' data format")
     # robot_only accepts any format in the registry (already validated above)
 
-
+#生成一张地面点云网格 (N,3)
 def create_ground_points(x_range: tuple[float, float], y_range: tuple[float, float], size: int) -> np.ndarray:
     """Create ground point meshgrid.
 

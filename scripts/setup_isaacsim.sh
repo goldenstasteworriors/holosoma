@@ -48,9 +48,15 @@ if [[ ! -f $SENTINEL_FILE ]]; then
   pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
 
   # Install dependencies from PyPI first
-  pip install pyperclip
-  # Then install isaacsim from NVIDIA index only
-  pip install "isaacsim[all,extscache]==5.1.0" --extra-index-url https://pypi.nvidia.com
+
+  pip install -i https://pypi.org/simple pyperclip
+  # Install isaacsim from NVIDIA index, but allow dependencies to come from PyPI.
+  # Otherwise pip may fail resolving common deps (e.g., aiohttp) if they aren't mirrored on the NVIDIA index.
+  pip install "isaacsim[all,extscache]==5.1.0" \
+    --index-url https://pypi.nvidia.com \
+    --extra-index-url https://pypi.org/simple \
+    --trusted-host pypi.nvidia.com
+
 
   if [[ ! -d $WORKSPACE_DIR/IsaacLab ]]; then
     git clone https://github.com/isaac-sim/IsaacLab.git --branch v2.3.0 $WORKSPACE_DIR/IsaacLab

@@ -123,6 +123,7 @@ CONVERTED_FILE="$PROJECT_ROOT/src/holosoma_retargeting/converted_res/robot_only/
 python src/holosoma/holosoma/train_agent.py \
     exp:g1-29dof-wbt \
     logger:wandb \
+    --training.num-envs 256 \
     --command.setup_terms.motion_command.params.motion_config.motion_file=$CONVERTED_FILE
 
 echo "Done!"

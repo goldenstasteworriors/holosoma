@@ -20,6 +20,14 @@ Thumbs.db
 logs
 logs_eval
 
+#datasets
+src/holosoma_retargeting/data_utils/ubisoft-laforge-animation-dataset
+src/holosoma_retargeting/demo_data/
+src/holosoma_retargeting/demo_results/
+src/holosoma_retargeting/converted_res/
+OmniRetarget
+ckpt
+
 # Isaacsim Converted Files
 src/holosoma/holosoma/data/robots/converted/
 src/holosoma/holosoma/data/robots/converted_rank*/
