@@ -92,22 +92,25 @@ def download_wandb_file(uri: str, cache_path: Path) -> None:
         if not temp_file.exists():
             raise FileNotFoundError(f"Downloaded file not found: {temp_file}")
 
-        # Atomic move to cache location
+        # Move into cache location with race protection.
+        # NOTE: Path.rename() fails across filesystems (EXDEV) when /tmp and ~/.cache are on different mounts.
         import os
+        import shutil
 
         # Use process-specific temp name to avoid conflicts
         temp_cache = cache_path.with_suffix(f".tmp.{os.getpid()}")
         try:
-            temp_file.rename(temp_cache)
-            # Try atomic rename
+            # shutil.move handles cross-device moves (copy+unlink fallback)
+            shutil.move(str(temp_file), str(temp_cache))
+
+            # Try atomic-ish finalize: prefer replace semantics, but don't clobber if another process won.
             try:
-                temp_cache.rename(cache_path)
+                os.replace(temp_cache, cache_path)
             except FileExistsError:
                 # Another process beat us to it, clean up our temp file
-                temp_cache.unlink()
+                Path(temp_cache).unlink(missing_ok=True)
                 logger.debug("Another process cached the file first")
         except Exception:
             # Clean up on error
-            if temp_cache.exists():
-                temp_cache.unlink()
+            Path(temp_cache).unlink(missing_ok=True)
             raise
