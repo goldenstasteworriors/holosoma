@@ -77,55 +77,29 @@ def run_smplx_model(
         smpl_pose_body,
         smpl_pose_hand,
     ]
-    # batch may be a mix of genders, so need to carefully use the corresponding SMPL body model
-    # gender_names = ["male", "female", "neutral"]
-    gender_names = ["neutral"]  # We use neutral gender for all the data in G1 setting
-    pred_joints = []
-    pred_verts = []
-    prev_nbidx = 0
-    cat_idx_map = np.ones((B), dtype=np.int64) * -1
-    for gender_name in gender_names:
-        gender_idx = np.array(gender) == gender_name
-        nbidx = np.sum(gender_idx)
+    # NOTE: AMASS sequences are usually labeled as "male"/"female".
+    # For the G1 retargeting pipeline we use the neutral SMPL-X model for all sequences.
+    (
+        cur_pred_trans,
+        cur_pred_orient,
+        cur_betas,
+        cur_pred_pose,
+        cur_pred_pose_hand,
+    ) = smpl_vals
+    bm = bm_dict["neutral"]
 
-        cat_idx_map[gender_idx] = np.arange(prev_nbidx, prev_nbidx + nbidx, dtype=np.int64)
-        prev_nbidx += nbidx
+    pred_body = bm(
+        pose_body=cur_pred_pose,
+        pose_hand=cur_pred_pose_hand,
+        betas=cur_betas,
+        root_orient=cur_pred_orient,
+        trans=cur_pred_trans,
+    )
 
-        gender_smpl_vals = [val[gender_idx] for val in smpl_vals]
+    x_pred_smpl_joints = pred_body.Jtr  # (BS*T) X 52 X 3
+    x_pred_smpl_verts = pred_body.v  # (BS*T) X 6890 X 3
 
-        if nbidx == 0:
-            # skip if no frames for this gender
-            continue
-
-        # reconstruct SMPL
-        (
-            cur_pred_trans,
-            cur_pred_orient,
-            cur_betas,
-            cur_pred_pose,
-            cur_pred_pose_hand,
-        ) = gender_smpl_vals
-        bm = bm_dict[gender_name]
-
-        pred_body = bm(
-            pose_body=cur_pred_pose,
-            pose_hand=cur_pred_pose_hand,
-            betas=cur_betas,
-            root_orient=cur_pred_orient,
-            trans=cur_pred_trans,
-        )
-
-        pred_joints.append(pred_body.Jtr)
-        pred_verts.append(pred_body.v)
-
-    x_pred_smpl_joints = torch.cat(pred_joints, axis=0)  # () X 52 X 3
-
-    x_pred_smpl_joints = x_pred_smpl_joints[cat_idx_map]  # (BS*T) X 22 X 3
-
-    x_pred_smpl_verts = torch.cat(pred_verts, axis=0)
-    x_pred_smpl_verts = x_pred_smpl_verts[cat_idx_map]  # (BS*T) X 6890 X 3
-
-    x_pred_smpl_joints = x_pred_smpl_joints.reshape(bs, num_steps, -1, 3)  # BS X T X 22 X 3/BS X T X 24 X 3
+    x_pred_smpl_joints = x_pred_smpl_joints.reshape(bs, num_steps, -1, 3)  # BS X T X 52 X 3
     x_pred_smpl_verts = x_pred_smpl_verts.reshape(bs, num_steps, -1, 3)  # BS X T X 6890 X 3
 
     mesh_faces = pred_body.f
@@ -140,35 +114,33 @@ def prep_smplx_model(model_root_folder):
     surface_model_male_fname = os.path.join(support_base_dir, surface_model_type, "SMPLX_MALE.npz")
     surface_model_female_fname = os.path.join(support_base_dir, surface_model_type, "SMPLX_FEMALE.npz")
     surface_model_neutral_fname = os.path.join(support_base_dir, surface_model_type, "SMPLX_NEUTRAL.npz")
-    dmpl_fname = None
-    num_dmpls = None
-    num_expressions = None
+    # This human_body_prior fork treats "num_dmpls is not None" as enabling DMPL
+    # (and will require dmpl_fname). We don't need DMPLs here, so keep it as None.
+    # Also, it expects num_expressions to be an int (not None).
+    num_expressions = 0
     num_betas = 16
 
-    male_bm = BodyModel(
-        bm_fname=surface_model_male_fname,
-        num_betas=num_betas,
-        num_expressions=num_expressions,
-        num_dmpls=num_dmpls,
-        dmpl_fname=dmpl_fname,
-    )
-    female_bm = BodyModel(
-        bm_fname=surface_model_female_fname,
-        num_betas=num_betas,
-        num_expressions=num_expressions,
-        num_dmpls=num_dmpls,
-        dmpl_fname=dmpl_fname,
-    )
+    if not os.path.exists(surface_model_neutral_fname):
+        raise FileNotFoundError(
+            "SMPL-X neutral model file not found. Expected: "
+            f"{surface_model_neutral_fname}\n"
+            "Please set --model-root-folder to a directory that contains:"
+            " <model_root>/smplx/SMPLX_NEUTRAL.npz"
+        )
+
     neutral_bm = BodyModel(
         bm_fname=surface_model_neutral_fname,
         num_betas=num_betas,
         num_expressions=num_expressions,
-        num_dmpls=num_dmpls,
-        dmpl_fname=dmpl_fname,
     )
+    if not os.path.exists(surface_model_male_fname) or not os.path.exists(surface_model_female_fname):
+        print(
+            "[prep_amass_smplx_for_rt] SMPLX_MALE.npz / SMPLX_FEMALE.npz not found; "
+            "using SMPLX_NEUTRAL.npz for all sequences."
+        )
     return {
-        "male": male_bm,
-        "female": female_bm,
+        "male": neutral_bm,
+        "female": neutral_bm,
         "neutral": neutral_bm,
     }
 
@@ -180,7 +152,7 @@ def compute_height(bm_dict, betas, gender):
     Args:
         bm_dict: Dictionary of BodyModel instances
         betas: Shape parameters (1, 16) or (16,)
-        gender: Gender string ('male' or 'female')
+        gender: Unused (kept for backward compatibility). This script uses the neutral SMPL-X model.
 
     Returns:
         float: Height in meters (max_z - min_z of vertices)
