@@ -42,6 +42,33 @@ class LayerConfig:
     encoder_hidden_dims: List[int] | None = None
     """Hidden dimensions for encoder. Only used for encoder modules."""
 
+    robot_encoder_hidden_dims: List[int] | None = None
+    """Hidden dimensions for SONIC robot command encoder (SonicUniversal)."""
+
+    human_encoder_hidden_dims: List[int] | None = None
+    """Hidden dimensions for SONIC human command encoder (SonicUniversal)."""
+
+    hybrid_encoder_hidden_dims: List[int] | None = None
+    """Hidden dimensions for SONIC hybrid command encoder (SonicUniversal)."""
+
+    sonic_fsq_enabled: bool = True
+    """Whether to enable the SONIC quantizer (SonicUniversal)."""
+
+    sonic_fsq_levels: int | List[int] = 8
+    """FSQ quantization levels for SONIC (SonicUniversal).
+
+    Can be an int (expanded internally) or a per-dimension list, e.g. [8, 5, 5, 5].
+    """
+
+    sonic_recon_coef: float = 1.0
+    """Auxiliary reconstruction loss coefficient for SONIC (SonicUniversal)."""
+
+    sonic_token_coef: float = 1.0
+    """Auxiliary token alignment loss coefficient for SONIC (SonicUniversal)."""
+
+    sonic_cycle_coef: float = 1.0
+    """Auxiliary cycle-consistency loss coefficient for SONIC (SonicUniversal)."""
+
     encoder_input_name: str = ""
     """Input name for encoder. Only used for encoder modules."""
 

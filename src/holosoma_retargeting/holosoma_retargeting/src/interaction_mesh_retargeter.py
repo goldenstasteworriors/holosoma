@@ -431,10 +431,69 @@ class InteractionMeshRetargeter:
             robot_kpts_handle_list.clear()
 
         # Save results
+        # ------------------------------------------------------------------
+        # Additional saved motions requested by user
+        # 1) human_motion: all joints relative to the first joint (Hips/Pelvis)
+        # 2) hybrid_motion_upper_body: Head/RightHand/LeftHand relative to the first joint
+        # 3) hybrid_motion_lower_body: robot lower-body joint angles (heuristic: first 15 DOFs)
+
+        human_motion = human_joint_motions - human_joint_motions[:, :1, :]
+
+        def _find_demo_joint_index(name: str) -> int | None:
+            if name in self.demo_joints:
+                return self.demo_joints.index(name)
+            name_l = name.lower()
+            for i, jn in enumerate(self.demo_joints):
+                if jn.lower() == name_l:
+                    return i
+            return None
+
+        def _find_with_aliases(primary: str, aliases: list[str]) -> int:
+            idx = _find_demo_joint_index(primary)
+            if idx is not None:
+                return idx
+            for a in aliases:
+                idx = _find_demo_joint_index(a)
+                if idx is not None:
+                    return idx
+            raise KeyError(
+                f"Cannot find joint '{primary}' (or aliases {aliases}) in demo_joints: {self.demo_joints}"
+            )
+
+        head_idx = _find_with_aliases("Head", ["head"])  # common across formats
+        right_hand_idx = _find_with_aliases(
+            "RightHand",
+            [
+                "R_Wrist",
+                "RightWrist",
+                "R_Hand",
+                "RightHandMiddle3",
+            ],
+        )
+        left_hand_idx = _find_with_aliases(
+            "LeftHand",
+            [
+                "L_Wrist",
+                "LeftWrist",
+                "L_Hand",
+                "LeftHandMiddle3",
+            ],
+        )
+        upper_body_indices = np.array([head_idx, right_hand_idx, left_hand_idx], dtype=int)
+        hybrid_motion_upper_body = human_motion[:, upper_body_indices, :]
+
+        retargeted_qpos = np.asarray(retargeted_motions)[1:]
+        robot_dof_pos = retargeted_qpos[:, 7 : 7 + int(self.task_constants.ROBOT_DOF)]
+        lower_body_dof_count = min(15, robot_dof_pos.shape[1])
+        hybrid_motion_lower_body = robot_dof_pos[:, :lower_body_dof_count]
+
         np.savez(
             dest_res_path,
             qpos=np.array(retargeted_motions)[1:],
             human_joints=human_joint_motions,
+            human_motion=human_motion,
+            hybrid_motion_upper_body=hybrid_motion_upper_body,
+            hybrid_motion_lower_body=hybrid_motion_lower_body,
             fps=30,
             cost=cost,
         )
@@ -1027,6 +1086,21 @@ class InteractionMeshRetargeter:
         Fast analytic version: J_qdot = J_v @ T(q)
         """
 
+        # MuJoCo's Python bindings may expose ids (e.g., geom.bodyid) as numpy scalars/arrays.
+        # Normalize to a plain Python int before using it for indexing or passing into mj_jac.
+        if not isinstance(body_idx, (int, np.integer)):
+            try:
+                import torch  # type: ignore
+
+                if isinstance(body_idx, torch.Tensor):
+                    body_idx = body_idx.detach().cpu().numpy()
+            except Exception:
+                pass
+
+            body_idx = np.asarray(body_idx).reshape(-1)[0].item()
+
+        body_idx = int(body_idx)
+
         p_body = np.asarray(p_body, dtype=float).reshape(3)
 
         # 1) Make sure kinematics are current once
@@ -1044,7 +1118,7 @@ class InteractionMeshRetargeter:
         # 3) J_v: translational Jacobian wrt generalized velocities (3 x nv)
         Jp = np.zeros((3, self.robot_model.nv), dtype=np.float64, order="C")
         Jr = np.zeros((3, self.robot_model.nv), dtype=np.float64, order="C")
-        mujoco.mj_jac(self.robot_model, self.robot_data, Jp, Jr, p_W, int(body_idx))  # Jp = J_v
+        mujoco.mj_jac(self.robot_model, self.robot_data, Jp, Jr, p_W, body_idx)  # Jp = J_v
 
         T = self._build_transform_qdot_to_qvel_fast()
 

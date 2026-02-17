@@ -19,7 +19,7 @@ def setup_ppo_actor_module(
             num_actions=num_actions,
             init_noise_std=init_noise_std,
         ).to(device)
-    if module_type == "MLP":
+    if module_type in ["MLP", "SonicUniversal"]:
         return PPOActor(
             obs_dim_dict=obs_dim_dict,
             module_config_dict=module_config,

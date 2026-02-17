@@ -21,11 +21,11 @@ logs
 logs_eval
 
 #datasets
-src/holosoma_retargeting/data_utils/ubisoft-laforge-animation-dataset
+src/holosoma_retargeting/data_utils/ubisoft-laforge-animation-dataset/
 src/holosoma_retargeting/demo_data/
 src/holosoma_retargeting/demo_results/
+src/holosoma_retargeting/demo_results_parallel/
 src/holosoma_retargeting/converted_res/
-src/holosoma_retargeting/demo_data
 OmniRetarget
 ckpt
 

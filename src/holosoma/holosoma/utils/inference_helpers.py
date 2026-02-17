@@ -21,13 +21,23 @@ def _find_input_dim_from_module(module: torch.nn.Module) -> int:
     # Strategy 1: PPO-style - actor_module.module (torch.nn.Sequential)
     if hasattr(module, "actor_module") and hasattr(module.actor_module, "module"):
         core_model = module.actor_module.module
-        if hasattr(core_model[0], "in_features"):
-            return core_model[0].in_features
+        # Common case: torch.nn.Sequential
+        if isinstance(core_model, torch.nn.Sequential) and len(core_model) > 0:
+            if hasattr(core_model[0], "in_features"):
+                return core_model[0].in_features
+
+        # More general case: the actor mean network is a custom nn.Module.
+        # Fall back to scanning its submodules for the first Linear layer.
+        for submodule in core_model.modules():
+            if isinstance(submodule, torch.nn.Linear):
+                return submodule.in_features
 
     # Strategy 2: FastSAC/FastTD3-style - .net attribute
-    if hasattr(module, "net") and len(module.net) > 0:
-        if hasattr(module.net[0], "in_features"):
-            return module.net[0].in_features
+    if hasattr(module, "net"):
+        net = module.net
+        if isinstance(net, (torch.nn.Sequential, list, tuple)) and len(net) > 0:
+            if hasattr(net[0], "in_features"):
+                return net[0].in_features
 
     # Strategy 3: Find first Linear layer in module tree
     for submodule in module.modules():

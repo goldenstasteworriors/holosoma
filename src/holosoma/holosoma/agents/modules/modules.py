@@ -360,6 +360,24 @@ class BaseModule(nn.Module):
                 self.output_dim,
                 layer_config,
             )
+        elif layer_type == "SonicUniversal":
+            from holosoma.sonic.policy.ppo_adapter import build_sonic_universal_actor_mean
+
+            latent_dim = layer_config.encoder_output_dim
+            self.module = build_sonic_universal_actor_mean(
+                input_dim=self.input_dim,
+                output_dim=self.output_dim,
+                hidden_dims=layer_config.hidden_dims,
+                latent_dim=latent_dim,
+                robot_encoder_hidden_dims=layer_config.robot_encoder_hidden_dims,
+                human_encoder_hidden_dims=layer_config.human_encoder_hidden_dims,
+                hybrid_encoder_hidden_dims=layer_config.hybrid_encoder_hidden_dims,
+                fsq_enabled=layer_config.sonic_fsq_enabled,
+                fsq_levels=layer_config.sonic_fsq_levels,
+                recon_coef=layer_config.sonic_recon_coef,
+                token_coef=layer_config.sonic_token_coef,
+                cycle_coef=layer_config.sonic_cycle_coef,
+            )
         elif layer_type == "CNNEncoder":
             self.encoder = build_cnn_layer(
                 layer_config.input_channels,

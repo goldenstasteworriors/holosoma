@@ -514,9 +514,19 @@ class PPO(BaseAlgo):
             + self.config.symmetry_actor_coef * symmetry_actor_loss
         )
 
+        # SONIC auxiliary losses (Sec. 3.2): optionally provided by the actor module.
+        aux_losses: dict[str, torch.Tensor] = {}
+        actor_module = getattr(self.actor, "actor_module", None)
+        module_impl = getattr(actor_module, "module", None) if actor_module is not None else None
+        if module_impl is not None and hasattr(module_impl, "get_aux_losses"):
+            aux_losses = module_impl.get_aux_losses()
+            if isinstance(aux_losses, dict) and len(aux_losses) > 0:
+                aux_total = sum(aux_losses.values())
+                actor_loss = actor_loss + aux_total
+
         critic_loss = self.config.value_loss_coef * value_loss + self.config.symmetry_critic_coef * symmetry_critic_loss
 
-        return {
+        out = {
             "actor_loss": actor_loss,
             "critic_loss": critic_loss,
             "symmetry_actor_loss": symmetry_actor_loss,
@@ -526,6 +536,9 @@ class PPO(BaseAlgo):
             "entropy_loss": entropy_loss,
             "kl_mean": kl_mean,
         }
+        if isinstance(aux_losses, dict):
+            out.update(aux_losses)
+        return out
 
     def _compute_kl_div(self, old_mu_batch, old_sigma_batch, mu_batch, sigma_batch) -> torch.Tensor:
         with torch.inference_mode():

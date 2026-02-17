@@ -8,7 +8,10 @@ from types import SimpleNamespace
 from typing import Any, Tuple, cast
 
 import mujoco  # type: ignore[import-not-found]
-import mujoco.viewer as mjv  # type: ignore[import-not-found]
+try:
+    import mujoco.viewer as mjv  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover
+    mjv = None
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -137,8 +140,42 @@ class MotionLoader:
         """Loads the motion from the csv file."""
         if self.motion_file.endswith(".npz"):
             data = np.load(self.motion_file)
-            self.input_fps = round(1 / data.get("fps", 1 / self.input_fps))
+            # Retargeting outputs sometimes store either:
+            # - fps (e.g., 30)
+            # - dt  (e.g., 1/30)
+            # Support both to keep interpolation consistent.
+            if "fps" in data:
+                fps_val = float(np.array(data["fps"]).reshape(-1)[0])
+                if fps_val <= 1.0:
+                    # Interpret as dt.
+                    self.input_fps = int(round(1.0 / max(fps_val, 1e-8)))
+                else:
+                    self.input_fps = int(round(fps_val))
+            if self.input_fps <= 0:
+                raise ValueError(f"Invalid input_fps parsed from npz: {self.input_fps}")
+            self.input_dt = 1.0 / float(self.input_fps)
             motion = torch.from_numpy(data["qpos"]).to(torch.float32)
+
+            # Optional SONIC command streams (already preprocessed in local/relative frames).
+            # These are used to build human/hybrid commands downstream.
+            self.has_sonic_command_streams = (
+                ("human_motion" in data)
+                and ("hybrid_motion_upper_body" in data)
+                and ("hybrid_motion_lower_body" in data)
+            )
+            if self.has_sonic_command_streams:
+                self.human_motion_input = torch.from_numpy(data["human_motion"]).to(torch.float32)
+                # Some pipelines also store joints separately; keep if present.
+                self.human_joints_input = (
+                    torch.from_numpy(data["human_joints"]).to(torch.float32) if "human_joints" in data else None
+                )
+                self.hybrid_upper_body_input = torch.from_numpy(data["hybrid_motion_upper_body"]).to(torch.float32)
+                self.hybrid_lower_body_input = torch.from_numpy(data["hybrid_motion_lower_body"]).to(torch.float32)
+            else:
+                self.human_motion_input = None
+                self.human_joints_input = None
+                self.hybrid_upper_body_input = None
+                self.hybrid_lower_body_input = None
         else:
             raise ValueError("Unsupported motion file format. Use .csv or .npz.")
 
@@ -184,6 +221,41 @@ class MotionLoader:
             self.motion_dof_poss_input[index_1],
             blend.unsqueeze(1),
         )
+
+        # Optional SONIC command stream interpolation.
+        if getattr(self, "has_sonic_command_streams", False):
+            b_j3 = blend.view(-1, 1, 1)
+            b_f = blend.view(-1, 1)
+
+            self.human_motion = self._lerp(
+                self.human_motion_input[index_0].to(self.device),
+                self.human_motion_input[index_1].to(self.device),
+                b_j3,
+            )
+            if self.human_joints_input is not None:
+                self.human_joints = self._lerp(
+                    self.human_joints_input[index_0].to(self.device),
+                    self.human_joints_input[index_1].to(self.device),
+                    b_j3,
+                )
+            else:
+                self.human_joints = None
+
+            self.hybrid_motion_upper_body = self._lerp(
+                self.hybrid_upper_body_input[index_0].to(self.device),
+                self.hybrid_upper_body_input[index_1].to(self.device),
+                b_j3,
+            )
+            self.hybrid_motion_lower_body = self._lerp(
+                self.hybrid_lower_body_input[index_0].to(self.device),
+                self.hybrid_lower_body_input[index_1].to(self.device),
+                b_f,
+            )
+        else:
+            self.human_motion = None
+            self.human_joints = None
+            self.hybrid_motion_upper_body = None
+            self.hybrid_motion_lower_body = None
 
         if self.has_dynamic_object:
             self.motion_object_poss = self._lerp(
@@ -413,16 +485,23 @@ def run_simulator(args_cli: DataConversionConfig):
     dof_index_list = [joint_names.index(dof_name) for dof_name in dof_name_list]
     print(dof_index_list)
 
-    # Prepare mujoco viewer
-    viewer = mjv.launch_passive(robot, robot_data, show_left_ui=False, show_right_ui=False)
-    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = 0
-    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 0
-    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 0
-    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_COM] = 0
+    # Prepare mujoco viewer (optional)
+    viewer = None
+    if not getattr(args_cli, "no_viewer", False):
+        if mjv is None:
+            raise RuntimeError(
+                "MuJoCo viewer is not available but no_viewer=False. "
+                "Re-run with --no-viewer or fix the MuJoCo viewer installation."
+            )
+        viewer = mjv.launch_passive(robot, robot_data, show_left_ui=False, show_right_ui=False)
+        viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = 0
+        viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 0
+        viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 0
+        viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_COM] = 0
 
-    viewer.cam.distance = 2.0
-    viewer.cam.elevation = -20.0
-    viewer.cam.azimuth = 45.0
+        viewer.cam.distance = 2.0
+        viewer.cam.elevation = -20.0
+        viewer.cam.azimuth = 45.0
 
     log: dict[str, Any]
     if has_dynamic_object:
@@ -449,6 +528,19 @@ def run_simulator(args_cli: DataConversionConfig):
             "body_lin_vel_w": [],
             "body_ang_vel_w": [],
         }
+
+    # If input npz includes SONIC command streams, carry them into the converted output.
+    has_sonic_cmd = bool(getattr(motion, "has_sonic_command_streams", False))
+    if has_sonic_cmd:
+        log.update(
+            {
+                "human_motion": [],
+                "hybrid_motion_upper_body": [],
+                "hybrid_motion_lower_body": [],
+            }
+        )
+        if getattr(motion, "human_joints", None) is not None:
+            log["human_joints"] = []
     file_saved = False
     # --------------------------------------------------------------------------
 
@@ -519,10 +611,13 @@ def run_simulator(args_cli: DataConversionConfig):
             )
 
         mujoco.mj_forward(robot, robot_data)
-        viewer.sync()
+        if viewer is not None:
+            viewer.sync()
 
         end_time = time.perf_counter()
-        time.sleep(max(0, motion.output_dt - (end_time - start_time)))
+        # Throttle only when actively viewing in realtime.
+        if viewer is not None and getattr(args_cli, "realtime", True):
+            time.sleep(max(0, motion.output_dt - (end_time - start_time)))
 
         if not file_saved:
             lin_vel_w, ang_vel_w = world_body_velocities(robot, robot_data)
@@ -544,6 +639,18 @@ def run_simulator(args_cli: DataConversionConfig):
             log["body_lin_vel_w"].append(lin_vel_w[:].copy())
             log["body_ang_vel_w"].append(ang_vel_w[:].copy())
 
+            if has_sonic_cmd:
+                idx = motion.current_idx - 1
+                log["human_motion"].append(motion.human_motion[idx].detach().cpu().numpy().copy())
+                log["hybrid_motion_upper_body"].append(
+                    motion.hybrid_motion_upper_body[idx].detach().cpu().numpy().copy()
+                )
+                log["hybrid_motion_lower_body"].append(
+                    motion.hybrid_motion_lower_body[idx].detach().cpu().numpy().copy()
+                )
+                if getattr(motion, "human_joints", None) is not None:
+                    log["human_joints"].append(motion.human_joints[idx].detach().cpu().numpy().copy())
+
         if reset_flag and not file_saved:
             file_saved = True
             for k in (
@@ -555,6 +662,12 @@ def run_simulator(args_cli: DataConversionConfig):
                 "body_ang_vel_w",
             ):
                 log[k] = np.stack(log[k], axis=0)[:]
+
+            if has_sonic_cmd:
+                for k in ("human_motion", "hybrid_motion_upper_body", "hybrid_motion_lower_body"):
+                    log[k] = np.stack(log[k], axis=0)[:]
+                if "human_joints" in log:
+                    log["human_joints"] = np.stack(log["human_joints"], axis=0)[:]
 
             if has_dynamic_object:
                 for k in (
@@ -585,7 +698,8 @@ def run_simulator(args_cli: DataConversionConfig):
 
         if args_cli.once and file_saved:
             print("[INFO]: Motion replay completed, exiting...")
-            viewer.close()
+            if viewer is not None:
+                viewer.close()
             break
 
 

@@ -80,6 +80,12 @@ class DataConversionConfig:
     once: bool = False
     """Run the motion once and exit."""
 
+    no_viewer: bool = False
+    """Disable MuJoCo viewer (headless conversion)."""
+
+    realtime: bool = True
+    """If True, throttle the loop to match motion dt (useful for viewing)."""
+
     use_omniretarget_data: bool = False
     """Use OmniRetarget data format."""
 

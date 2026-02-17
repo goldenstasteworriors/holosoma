@@ -80,6 +80,31 @@ class MotionLoader:
             self._body_lin_vel_w = torch.tensor(data["body_lin_vel_w"], dtype=torch.float32, device=device)
             self._body_ang_vel_w = torch.tensor(data["body_ang_vel_w"], dtype=torch.float32, device=device)
 
+            # Optional SONIC command streams (preprocessed from retargeting outputs).
+            self.has_sonic_command_streams = (
+                ("human_motion" in data)
+                and ("hybrid_motion_upper_body" in data)
+                and ("hybrid_motion_lower_body" in data)
+            )
+            if self.has_sonic_command_streams:
+                self._human_motion = torch.tensor(data["human_motion"], dtype=torch.float32, device=device)
+                self._hybrid_motion_upper_body = torch.tensor(
+                    data["hybrid_motion_upper_body"], dtype=torch.float32, device=device
+                )
+                self._hybrid_motion_lower_body = torch.tensor(
+                    data["hybrid_motion_lower_body"], dtype=torch.float32, device=device
+                )
+                self._human_joints = (
+                    torch.tensor(data["human_joints"], dtype=torch.float32, device=device)
+                    if "human_joints" in data
+                    else None
+                )
+            else:
+                self._human_motion = None
+                self._human_joints = None
+                self._hybrid_motion_upper_body = None
+                self._hybrid_motion_lower_body = None
+
             # add object pos and quat
             self.has_object = "object_pos_w" in data
             if self.has_object:
@@ -93,6 +118,22 @@ class MotionLoader:
                 self._object_quat_w = torch.zeros(0, 4, device=device)
                 self._object_lin_vel_w = torch.zeros(0, 3, device=device)
         return body_names, joint_names
+
+    @property
+    def human_motion(self) -> torch.Tensor | None:
+        return self._human_motion
+
+    @property
+    def human_joints(self) -> torch.Tensor | None:
+        return self._human_joints
+
+    @property
+    def hybrid_motion_upper_body(self) -> torch.Tensor | None:
+        return self._hybrid_motion_upper_body
+
+    @property
+    def hybrid_motion_lower_body(self) -> torch.Tensor | None:
+        return self._hybrid_motion_lower_body
 
     @property
     def joint_pos(self) -> torch.Tensor:

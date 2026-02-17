@@ -10,6 +10,7 @@ from holosoma.config_values.wbt.g1.experiment import (
     g1_29dof_wbt_fast_sac_w_object,
     g1_29dof_wbt_w_object,
 )
+from holosoma.config_values.sonic.g1.experiment import g1_29dof_sonic, g1_29dof_sonic_w_object
 
 DEFAULTS = {
     "g1_29dof": g1_29dof,
@@ -20,6 +21,8 @@ DEFAULTS = {
     "g1_29dof_wbt_w_object": g1_29dof_wbt_w_object,
     "g1_29dof_wbt_fast_sac": g1_29dof_wbt_fast_sac,
     "g1_29dof_wbt_fast_sac_w_object": g1_29dof_wbt_fast_sac_w_object,
+    "g1_29dof_sonic": g1_29dof_sonic,
+    "g1_29dof_sonic_w_object": g1_29dof_sonic_w_object,
 }
 
 AnnotatedExperimentConfig = Annotated[
