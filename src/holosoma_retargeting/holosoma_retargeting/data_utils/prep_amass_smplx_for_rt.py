@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +21,8 @@ def load_ori_npz_file(npz_file_path, dest_fps=30):
     'trans', 'poses', 'betas', 'num_betas',
     'root_orient', 'pose_body', 'pose_hand', 'pose_jaw', 'pose_eye']
     """
+    # Some datasets may contain corrupted or misnamed *.npz files.
+    # Let callers decide how to handle exceptions.
     data = np.load(npz_file_path)
     ori_fps = data["mocap_frame_rate"]
 
@@ -224,11 +227,41 @@ def main(cfg: Config):
     # Prepare desired output folder
     os.makedirs(cfg.output_folder, exist_ok=True)
 
+    failure_log_path = os.path.join(cfg.output_folder, "failed_files.txt")
+    print(f"Found {len(npz_file_paths)} '*_stageii.npz' files under: {cfg.amass_root_folder}")
+    if len(npz_file_paths) == 0:
+        raise FileNotFoundError(
+            "No '*_stageii.npz' files found. "
+            "Please check --amass-root-folder (and optional --subdataset-folder)."
+        )
+
     bm_dict = prep_smplx_model(cfg.model_root_folder)
 
     num_body_joints = 22
+
+    processed = 0
+    skipped_existing = 0
+    failed = 0
+
     for npz_file_path in npz_file_paths:
-        data = load_ori_npz_file(npz_file_path)
+        # Compute output path early to support resume/skip
+        npz_path = Path(npz_file_path)
+        subset_data_name = npz_path.parts[-3]
+        sub_name = npz_path.parts[-2]
+        output_file_path = os.path.join(cfg.output_folder, subset_data_name + "_" + sub_name + "_" + npz_path.name)
+        if os.path.exists(output_file_path):
+            skipped_existing += 1
+            continue
+
+        try:
+            data = load_ori_npz_file(npz_file_path)
+        except (zipfile.BadZipFile, OSError, ValueError, EOFError) as exc:
+            failed += 1
+            with open(failure_log_path, "a", encoding="utf-8") as f:
+                f.write(f"{npz_file_path}\t{type(exc).__name__}: {exc}\n")
+            print(f"[WARN] Failed to load: {npz_file_path} ({type(exc).__name__}: {exc})")
+            continue
+
         gender = data["gender"]
         betas = data["betas"]  # 16
         root_trans = data["trans"]  # T X 3
@@ -254,16 +287,18 @@ def main(cfg: Config):
         print(f"Height: {height}")
 
         # Save the processed data to the output folder
-        npz_path = Path(npz_file_path)
-        subset_data_name = npz_path.parts[-3]
-        sub_name = npz_path.parts[-2]
-        output_file_path = os.path.join(cfg.output_folder, subset_data_name + "_" + sub_name + "_" + npz_path.name)
         np.savez(output_file_path, global_joint_positions=global_joint_positions, height=height)
         print(f"Saved processed data to {output_file_path}")
 
+        processed += 1
+
         # break
 
-    print("All data processed successfully")
+    print(
+        "All data processed successfully. "
+        f"Processed: {processed}, skipped(existing): {skipped_existing}, failed: {failed}. "
+        f"Failure log: {failure_log_path}"
+    )
 
 
 if __name__ == "__main__":
