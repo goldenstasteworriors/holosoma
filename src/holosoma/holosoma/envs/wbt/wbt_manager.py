@@ -239,4 +239,5 @@ class WholeBodyTrackingManager(BaseTask):
 
         time.sleep(dt)
 
-        return motion_command.time_steps[0].item() >= motion_command.motion.time_step_total - 2
+        lengths = motion_command.get_env_motion_time_step_total()
+        return motion_command.time_steps[0].item() >= int(lengths[0].item()) - 2

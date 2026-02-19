@@ -216,7 +216,9 @@ class SonicMotionCommand(MotionCommand):
 
         base = self.time_steps.view(-1, 1)  # (B, 1)
         idx = base + self._window_offsets.view(1, -1)  # (B, F)
-        idx = torch.clamp(idx, 0, int(self.motion.time_step_total) - 1)
+        max_idx = (self._get_env_motion_time_step_total() - 1).view(-1, 1)
+        idx = torch.minimum(idx, max_idx)
+        idx = torch.clamp(idx, 0)
         return idx
 
     def _get_human_window_indices(self) -> torch.Tensor:
@@ -225,17 +227,39 @@ class SonicMotionCommand(MotionCommand):
 
         base = self.time_steps.view(-1, 1)
         idx = base + self._human_offsets.view(1, -1)
-        idx = torch.clamp(idx, 0, int(self.motion.time_step_total) - 1)
+        max_idx = (self._get_env_motion_time_step_total() - 1).view(-1, 1)
+        idx = torch.minimum(idx, max_idx)
+        idx = torch.clamp(idx, 0)
         return idx
+
+    def _pool_attr_available(self, attr: str) -> bool:
+        """Return True if `attr` is available (non-None) for the current clip assignment.
+
+        For pool mode, require all clips in the pool to have the attribute so that
+        gather operations are well-defined.
+        """
+
+        if not self._using_motion_pool():
+            return getattr(self.motion, attr, None) is not None
+
+        assert self._motion_pool is not None
+        for clip in self._motion_pool:
+            if getattr(clip, attr, None) is None:
+                return False
+        return True
 
     def _body_pos_local_heading(self, *, idx_flat: torch.Tensor, body_indices: torch.Tensor) -> torch.Tensor:
         """Return body positions in the local heading frame, relative to reference body."""
 
-        body_pos_w = self.motion.body_pos_w[idx_flat][:, body_indices]  # (N, B, 3)
-        ref_pos_w = self.motion.body_pos_w[idx_flat][:, self.ref_body_index].unsqueeze(1)  # (N, 1, 3)
+        idx_full = idx_flat.view(self.num_envs, -1)
+        body_pos_w_full = self._gather_from_motion_pool(attr="body_pos_w", idx=idx_full)  # (B, F, Nb, 3)
+        body_pos_w_full = body_pos_w_full.reshape(-1, body_pos_w_full.shape[2], 3)  # (B*F, Nb, 3)
+        body_pos_w = body_pos_w_full[:, body_indices]  # (B*F, K, 3)
+        ref_pos_w = body_pos_w_full[:, self.ref_body_index].unsqueeze(1)  # (B*F, 1, 3)
         vec_w = body_pos_w - ref_pos_w
 
-        ref_quat_xyzw = self.motion.body_quat_w[idx_flat][:, self.ref_body_index]  # (N, 4)
+        body_quat_w_full = self._gather_from_motion_pool(attr="body_quat_w", idx=idx_full)  # (B, F, Nb, 4)
+        ref_quat_xyzw = body_quat_w_full[:, :, self.ref_body_index].reshape(-1, 4)  # (B*F, 4)
         heading_xyzw = yaw_quat(ref_quat_xyzw, w_last=True)
         heading_rep = heading_xyzw.unsqueeze(1).repeat(1, body_pos_w.shape[1], 1).reshape(-1, 4)
         vec_local = quat_rotate_inverse(heading_rep, vec_w.reshape(-1, 3), w_last=True)
@@ -244,7 +268,9 @@ class SonicMotionCommand(MotionCommand):
     def _body_vec_local_heading(self, *, vec_w: torch.Tensor, idx_flat: torch.Tensor) -> torch.Tensor:
         """Rotate world vectors into the local heading frame."""
 
-        ref_quat_xyzw = self.motion.body_quat_w[idx_flat][:, self.ref_body_index]  # (N, 4)
+        idx_full = idx_flat.view(self.num_envs, -1)
+        body_quat_w_full = self._gather_from_motion_pool(attr="body_quat_w", idx=idx_full)  # (B, F, Nb, 4)
+        ref_quat_xyzw = body_quat_w_full[:, :, self.ref_body_index].reshape(-1, 4)  # (B*F, 4)
         heading_xyzw = yaw_quat(ref_quat_xyzw, w_last=True)
         heading_rep = heading_xyzw.unsqueeze(1).repeat(1, vec_w.shape[1], 1).reshape(-1, 4)
         vec_local = quat_rotate_inverse(heading_rep, vec_w.reshape(-1, 3), w_last=True)
@@ -261,9 +287,8 @@ class SonicMotionCommand(MotionCommand):
         idx = self._get_window_indices()  # (B, F)
         b, f = idx.shape
 
-        idx_flat = idx.reshape(-1)
-        joint_pos = self.motion.joint_pos[idx_flat].reshape(b, f, -1)
-        joint_vel = self.motion.joint_vel[idx_flat].reshape(b, f, -1)
+        joint_pos = self._gather_from_motion_pool(attr="joint_pos", idx=idx)
+        joint_vel = self._gather_from_motion_pool(attr="joint_vel", idx=idx)
         window = torch.cat([joint_pos, joint_vel], dim=-1)  # (B, F, 2J)
         return window.reshape(b, -1)
 
@@ -283,36 +308,35 @@ class SonicMotionCommand(MotionCommand):
         """
 
         # Preferred: use conversion-derived per-DOF joint anchor signals (root-relative).
-        joint_pos = getattr(self.motion, "sonic_joint_pos_rel_root", None)
-        joint_vel = getattr(self.motion, "sonic_joint_lin_vel_rel_root", None)
-        if joint_pos is not None and joint_vel is not None:
+        if self._pool_attr_available("sonic_joint_pos_rel_root") and self._pool_attr_available(
+            "sonic_joint_lin_vel_rel_root"
+        ):
             idx = self._get_human_window_indices()  # (B, Fh)
             b, f = idx.shape
-            idx_flat = idx.reshape(-1)
-            feat = torch.cat([joint_pos[idx_flat], joint_vel[idx_flat]], dim=-1).reshape(b, f, -1)
+            joint_pos = self._gather_from_motion_pool(attr="sonic_joint_pos_rel_root", idx=idx)
+            joint_vel = self._gather_from_motion_pool(attr="sonic_joint_lin_vel_rel_root", idx=idx)
+            feat = torch.cat([joint_pos, joint_vel], dim=-1).reshape(b, f, -1)
             return feat.reshape(b, -1)
 
         # Next best: use conversion-derived sonic_* body signals (root-relative).
-        sonic_pos = getattr(self.motion, "sonic_body_pos_rel_root", None)
-        sonic_vel = getattr(self.motion, "sonic_body_lin_vel_rel_root", None)
-        if sonic_pos is not None and sonic_vel is not None:
+        if self._pool_attr_available("sonic_body_pos_rel_root") and self._pool_attr_available(
+            "sonic_body_lin_vel_rel_root"
+        ):
             if self._human_body_indices is None:
                 raise RuntimeError("SonicMotionCommand.setup() must be called before using human_command")
             idx = self._get_human_window_indices()  # (B, Fh)
             b, f = idx.shape
-            idx_flat = idx.reshape(-1)
-            pos = sonic_pos[idx_flat][:, self._human_body_indices]  # (B*Fh, Nh, 3)
-            vel = sonic_vel[idx_flat][:, self._human_body_indices]  # (B*Fh, Nh, 3)
+            pos = self._gather_from_motion_pool(attr="sonic_body_pos_rel_root", idx=idx)[:, :, self._human_body_indices]
+            vel = self._gather_from_motion_pool(attr="sonic_body_lin_vel_rel_root", idx=idx)[:, :, self._human_body_indices]
             feat = torch.cat([pos, vel], dim=-1).reshape(b, f, -1)
             return feat.reshape(b, -1)
 
         # Backward-compat: preprocessed human stream if present.
-        motion_human = getattr(self.motion, "human_motion", None)
-        if motion_human is not None:
+        if self._pool_attr_available("human_motion"):
             idx = self._get_human_window_indices()  # (B, Fh)
             b, f = idx.shape
-            idx_flat = idx.reshape(-1)
-            pos = motion_human[idx_flat]  # (B*Fh, J, D)
+            pos_w = self._gather_from_motion_pool(attr="human_motion", idx=idx)
+            pos = pos_w.reshape(-1, *pos_w.shape[2:])
             if pos.shape[-1] == 3:
                 vel = torch.zeros_like(pos)
                 feat = torch.cat([pos, vel], dim=-1)
@@ -331,13 +355,16 @@ class SonicMotionCommand(MotionCommand):
         idx_flat = idx.reshape(-1)
 
         # Fallback proxy: local-heading, relative-to-ref body pos + vel.
-        body_pos_w = self.motion.body_pos_w[idx_flat][:, self._human_body_indices]  # (N, Nh, 3)
-        ref_pos_w = self.motion.body_pos_w[idx_flat][:, self.ref_body_index].unsqueeze(1)  # (N, 1, 3)
+        idx_full = idx  # (B, Fh)
+        body_pos_w_full = self._gather_from_motion_pool(attr="body_pos_w", idx=idx_full)  # (B, Fh, Nb, 3)
+        body_pos_w = body_pos_w_full.reshape(-1, body_pos_w_full.shape[2], 3)[:, self._human_body_indices]
+        ref_pos_w = body_pos_w_full[:, :, self.ref_body_index].reshape(-1, 3).unsqueeze(1)
         pos_rel = body_pos_w - ref_pos_w
         pos_local = self._body_vec_local_heading(vec_w=pos_rel, idx_flat=idx_flat)
 
-        body_vel_w = self.motion.body_lin_vel_w[idx_flat][:, self._human_body_indices]
-        ref_vel_w = self.motion.body_lin_vel_w[idx_flat][:, self.ref_body_index].unsqueeze(1)
+        body_vel_w_full = self._gather_from_motion_pool(attr="body_lin_vel_w", idx=idx_full)
+        body_vel_w = body_vel_w_full.reshape(-1, body_vel_w_full.shape[2], 3)[:, self._human_body_indices]
+        ref_vel_w = body_vel_w_full[:, :, self.ref_body_index].reshape(-1, 3).unsqueeze(1)
         vel_rel = body_vel_w - ref_vel_w
         vel_local = self._body_vec_local_heading(vec_w=vel_rel, idx_flat=idx_flat)
 
@@ -354,47 +381,47 @@ class SonicMotionCommand(MotionCommand):
         """
 
         # Preferred: conversion-derived sonic_* hybrid upper-body keypoints (root-relative).
-        upper_pos = getattr(self.motion, "sonic_hybrid_upper_pos_rel_root", None)
-        upper_vel = getattr(self.motion, "sonic_hybrid_upper_vel_rel_root", None)
-        if upper_pos is not None and upper_vel is not None:
+        if self._pool_attr_available("sonic_hybrid_upper_pos_rel_root") and self._pool_attr_available(
+            "sonic_hybrid_upper_vel_rel_root"
+        ):
             idx_u = self._get_human_window_indices()  # (B, Fh)
             b, f = idx_u.shape
-            idx_u_flat = idx_u.reshape(-1)
-            upper = torch.cat([upper_pos[idx_u_flat], upper_vel[idx_u_flat]], dim=-1).reshape(b, f, -1)
+            upper_pos = self._gather_from_motion_pool(attr="sonic_hybrid_upper_pos_rel_root", idx=idx_u)
+            upper_vel = self._gather_from_motion_pool(attr="sonic_hybrid_upper_vel_rel_root", idx=idx_u)
+            upper = torch.cat([upper_pos, upper_vel], dim=-1).reshape(b, f, -1)
             upper = upper.reshape(b, -1)
 
             lower = self._hybrid_lower_robot_window()
             return torch.cat([upper, lower], dim=-1)
 
         # Next best: use sonic_* body signals and pick configured upper-body names.
-        sonic_pos = getattr(self.motion, "sonic_body_pos_rel_root", None)
-        sonic_vel = getattr(self.motion, "sonic_body_lin_vel_rel_root", None)
-        if sonic_pos is not None and sonic_vel is not None:
+        if self._pool_attr_available("sonic_body_pos_rel_root") and self._pool_attr_available(
+            "sonic_body_lin_vel_rel_root"
+        ):
             if self._hybrid_upper_body_indices is None:
                 raise RuntimeError("SonicMotionCommand.setup() must be called before using hybrid_command")
             idx_u = self._get_human_window_indices()
             b, f = idx_u.shape
-            idx_u_flat = idx_u.reshape(-1)
-            pos = sonic_pos[idx_u_flat][:, self._hybrid_upper_body_indices]
-            vel = sonic_vel[idx_u_flat][:, self._hybrid_upper_body_indices]
+            pos = self._gather_from_motion_pool(attr="sonic_body_pos_rel_root", idx=idx_u)[:, :, self._hybrid_upper_body_indices]
+            vel = self._gather_from_motion_pool(attr="sonic_body_lin_vel_rel_root", idx=idx_u)[:, :, self._hybrid_upper_body_indices]
             upper = torch.cat([pos, vel], dim=-1).reshape(b, f, -1).reshape(b, -1)
             lower = self._hybrid_lower_robot_window()
             return torch.cat([upper, lower], dim=-1)
 
         # Backward-compat: preprocessed hybrid stream if present in the motion file.
-        motion_upper = getattr(self.motion, "hybrid_motion_upper_body", None)
-        motion_lower = getattr(self.motion, "hybrid_motion_lower_body", None)
-        if motion_upper is not None and motion_lower is not None:
+        if self._pool_attr_available("hybrid_motion_upper_body") and self._pool_attr_available(
+            "hybrid_motion_lower_body"
+        ):
             idx_u = self._get_human_window_indices()  # (B, Fh)
             b, f = idx_u.shape
-            idx_u_flat = idx_u.reshape(-1)
-            upper = motion_upper[idx_u_flat]
+            upper_w = self._gather_from_motion_pool(attr="hybrid_motion_upper_body", idx=idx_u)
+            upper = upper_w.reshape(-1, *upper_w.shape[2:])
             if upper.shape[-1] == 3:
                 upper = torch.cat([upper, torch.zeros_like(upper)], dim=-1)
             upper = upper.reshape(b, f, -1).reshape(b, -1)
 
             idx_l = self._get_window_indices()
-            lower = motion_lower[idx_l.reshape(-1)].reshape(b, -1)
+            lower = self._gather_from_motion_pool(attr="hybrid_motion_lower_body", idx=idx_l).reshape(b, -1)
             return torch.cat([upper, lower], dim=-1)
 
         if self._hybrid_upper_body_indices is None:
@@ -408,13 +435,16 @@ class SonicMotionCommand(MotionCommand):
         b, f = idx_u.shape
         idx_u_flat = idx_u.reshape(-1)
 
-        body_pos_w = self.motion.body_pos_w[idx_u_flat][:, self._hybrid_upper_body_indices]
-        ref_pos_w = self.motion.body_pos_w[idx_u_flat][:, self.ref_body_index].unsqueeze(1)
+        idx_full = idx_u
+        body_pos_w_full = self._gather_from_motion_pool(attr="body_pos_w", idx=idx_full)
+        body_pos_w = body_pos_w_full.reshape(-1, body_pos_w_full.shape[2], 3)[:, self._hybrid_upper_body_indices]
+        ref_pos_w = body_pos_w_full[:, :, self.ref_body_index].reshape(-1, 3).unsqueeze(1)
         pos_rel = body_pos_w - ref_pos_w
         pos_local = self._body_vec_local_heading(vec_w=pos_rel, idx_flat=idx_u_flat)
 
-        body_vel_w = self.motion.body_lin_vel_w[idx_u_flat][:, self._hybrid_upper_body_indices]
-        ref_vel_w = self.motion.body_lin_vel_w[idx_u_flat][:, self.ref_body_index].unsqueeze(1)
+        body_vel_w_full = self._gather_from_motion_pool(attr="body_lin_vel_w", idx=idx_full)
+        body_vel_w = body_vel_w_full.reshape(-1, body_vel_w_full.shape[2], 3)[:, self._hybrid_upper_body_indices]
+        ref_vel_w = body_vel_w_full[:, :, self.ref_body_index].reshape(-1, 3).unsqueeze(1)
         vel_rel = body_vel_w - ref_vel_w
         vel_local = self._body_vec_local_heading(vec_w=vel_rel, idx_flat=idx_u_flat)
 
@@ -427,10 +457,9 @@ class SonicMotionCommand(MotionCommand):
 
         idx = self._get_window_indices()  # (B, F)
         b, f = idx.shape
-        idx_flat = idx.reshape(-1)
 
-        joint_pos = self.motion.joint_pos[idx_flat].reshape(b, f, -1)
-        joint_vel = self.motion.joint_vel[idx_flat].reshape(b, f, -1)
+        joint_pos = self._gather_from_motion_pool(attr="joint_pos", idx=idx)
+        joint_vel = self._gather_from_motion_pool(attr="joint_vel", idx=idx)
 
         if self._hybrid_lower_dof_indices is not None:
             joint_pos = joint_pos[:, :, self._hybrid_lower_dof_indices]

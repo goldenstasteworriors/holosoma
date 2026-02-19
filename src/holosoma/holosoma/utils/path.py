@@ -46,17 +46,15 @@ def resolve_data_file_path(file_path: str) -> str:
     # 1. If it's an S3 path, return as-is
     if file_path.startswith("s3://"):
         return file_path
+
     # 2. If starts with "holosoma/data", use importlib.resources
     if file_path.startswith("holosoma/data"):
         suffix = file_path[13:].lstrip("/")  # Remove "holosoma/data" and leading slashes
         base = files("holosoma.data")
-        return str(base / suffix) if suffix else str(base)
+        resolved_path = Path(str(base / suffix) if suffix else str(base))
+        return str(resolved_path)
 
-    # 3. If it's an absolute path, return as-is
+    # 3. Resolve filesystem paths.
     path_obj = Path(file_path)
-    if path_obj.is_absolute():
-        return file_path
-
-    # 4. Otherwise, resolve relative path to absolute (relative to CWD)
-    resolved = path_obj.resolve()
-    return str(resolved)
+    resolved_path = path_obj if path_obj.is_absolute() else path_obj.resolve()
+    return str(resolved_path)

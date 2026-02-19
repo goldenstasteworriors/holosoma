@@ -22,7 +22,8 @@ from holosoma.utils.safe_torch_import import torch
 def motion_ends(env, **_) -> torch.Tensor:
     """Terminate if the motion ends."""
     motion_command = env.command_manager.get_state("motion_command")
-    return motion_command.time_steps >= motion_command.motion.time_step_total - 2
+    lengths = motion_command.get_env_motion_time_step_total()
+    return motion_command.time_steps >= lengths - 2
 
 
 class BadTracking(TerminationTermBase):
@@ -76,8 +77,7 @@ class BadTracking(TerminationTermBase):
             bad_tracking |= bad_object_pos | bad_object_ori
 
         if motion_command.motion_cfg.use_adaptive_timesteps_sampler and torch.any(bad_tracking):
-            failed_at_time_step = motion_command.time_steps[bad_tracking]
-            motion_command.adaptive_timesteps_sampler.update_current_bin_failed_count(failed_at_time_step)
+            motion_command.update_adaptive_sampler_failed_count(bad_tracking)
 
         return bad_tracking
 
