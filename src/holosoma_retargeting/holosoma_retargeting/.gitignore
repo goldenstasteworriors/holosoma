@@ -17,6 +17,9 @@ nightly_data/
 nightly_results/
 demo_results/
 demo_results_parallel/
+amass_result/
+demo_data/
+converted_res/
 *.pyc
 demo_data/lafan/
 converted_res/

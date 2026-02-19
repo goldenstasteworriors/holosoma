@@ -36,3 +36,4 @@ src/holosoma/holosoma/data/robots/converted_rank*/
 # other
 *.egg-info
 __pycache__
+src/holosoma_retargeting/holosoma_retargeting/data_utils/human_body_prior/
