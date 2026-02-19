@@ -63,6 +63,21 @@ def limits_dof_pos(env: WholeBodyTrackingManager, soft_dof_pos_limit: float = 0.
     return torch.sum(out_of_limits, dim=1)
 
 
+def joint_limit_violations(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """Count joints that violate hard position limits.
+
+    This matches the Table 1 indicator-style joint limit penalty.
+
+    Returns:
+        Tensor [num_envs] containing the number of violating joints per env.
+    """
+    hard_limits = env.simulator.hard_dof_pos_limits  # type: ignore[attr-defined]
+    q = env.simulator.dof_pos
+    below = q < hard_limits[:, 0]
+    above = q > hard_limits[:, 1]
+    return (below | above).to(dtype=torch.float).sum(dim=1)
+
+
 #########################################################################################################
 ## terms specific to Whole Body Tracking
 #########################################################################################################

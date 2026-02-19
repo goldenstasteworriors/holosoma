@@ -28,6 +28,7 @@ class PPOActor(nn.Module):
 
         self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
         self.min_noise_std = module_config_dict.min_noise_std
+        self.max_noise_std = getattr(module_config_dict, "max_noise_std", None)
         self.min_mean_noise_std = module_config_dict.min_mean_noise_std
         self.distribution = None
         # disable args validation for speedup
@@ -72,8 +73,12 @@ class PPOActor(nn.Module):
 
     def update_distribution(self, actor_obs):
         mean = self.actor(actor_obs)
-        if self.min_noise_std:
-            clamped_std = torch.clamp(self.std, min=self.min_noise_std)
+        if self.min_noise_std is not None or self.max_noise_std is not None:
+            clamped_std = torch.clamp(
+                self.std,
+                min=self.min_noise_std if self.min_noise_std is not None else None,
+                max=self.max_noise_std if self.max_noise_std is not None else None,
+            )
             self.distribution = Normal(mean, mean * 0.0 + clamped_std)
         elif self.min_mean_noise_std:
             current_mean = self.std.mean()

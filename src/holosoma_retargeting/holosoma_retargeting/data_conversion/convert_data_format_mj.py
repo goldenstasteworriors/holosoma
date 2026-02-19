@@ -61,6 +61,9 @@ def create_task_constants(
     for attr, value in motion_data_config.legacy_constants().items():
         setattr(namespace, attr, value)
 
+    # Always define OBJECT_NAME for downstream scene setup.
+    namespace.OBJECT_NAME = "ground"
+
     if object_name is not None:
         namespace.OBJECT_NAME = object_name
 
@@ -154,28 +157,19 @@ class MotionLoader:
             if self.input_fps <= 0:
                 raise ValueError(f"Invalid input_fps parsed from npz: {self.input_fps}")
             self.input_dt = 1.0 / float(self.input_fps)
-            motion = torch.from_numpy(data["qpos"]).to(torch.float32)
 
-            # Optional SONIC command streams (already preprocessed in local/relative frames).
-            # These are used to build human/hybrid commands downstream.
-            self.has_sonic_command_streams = (
-                ("human_motion" in data)
-                and ("hybrid_motion_upper_body" in data)
-                and ("hybrid_motion_lower_body" in data)
-            )
-            if self.has_sonic_command_streams:
-                self.human_motion_input = torch.from_numpy(data["human_motion"]).to(torch.float32)
-                # Some pipelines also store joints separately; keep if present.
-                self.human_joints_input = (
-                    torch.from_numpy(data["human_joints"]).to(torch.float32) if "human_joints" in data else None
-                )
-                self.hybrid_upper_body_input = torch.from_numpy(data["hybrid_motion_upper_body"]).to(torch.float32)
-                self.hybrid_lower_body_input = torch.from_numpy(data["hybrid_motion_lower_body"]).to(torch.float32)
+            # Retargeting outputs use `qpos`. Our converted motion files store the
+            # same qpos trajectory under `joint_pos`.
+            if "qpos" in data:
+                motion_np = data["qpos"]
+            elif "joint_pos" in data:
+                motion_np = data["joint_pos"]
             else:
-                self.human_motion_input = None
-                self.human_joints_input = None
-                self.hybrid_upper_body_input = None
-                self.hybrid_lower_body_input = None
+                raise KeyError(
+                    "Input npz must contain `qpos` (retargeting output) or `joint_pos` (converted motion). "
+                    f"Available keys include: {list(data.files)[:20]}"
+                )
+            motion = torch.from_numpy(motion_np).to(torch.float32)
         else:
             raise ValueError("Unsupported motion file format. Use .csv or .npz.")
 
@@ -221,41 +215,6 @@ class MotionLoader:
             self.motion_dof_poss_input[index_1],
             blend.unsqueeze(1),
         )
-
-        # Optional SONIC command stream interpolation.
-        if getattr(self, "has_sonic_command_streams", False):
-            b_j3 = blend.view(-1, 1, 1)
-            b_f = blend.view(-1, 1)
-
-            self.human_motion = self._lerp(
-                self.human_motion_input[index_0].to(self.device),
-                self.human_motion_input[index_1].to(self.device),
-                b_j3,
-            )
-            if self.human_joints_input is not None:
-                self.human_joints = self._lerp(
-                    self.human_joints_input[index_0].to(self.device),
-                    self.human_joints_input[index_1].to(self.device),
-                    b_j3,
-                )
-            else:
-                self.human_joints = None
-
-            self.hybrid_motion_upper_body = self._lerp(
-                self.hybrid_upper_body_input[index_0].to(self.device),
-                self.hybrid_upper_body_input[index_1].to(self.device),
-                b_j3,
-            )
-            self.hybrid_motion_lower_body = self._lerp(
-                self.hybrid_lower_body_input[index_0].to(self.device),
-                self.hybrid_lower_body_input[index_1].to(self.device),
-                b_f,
-            )
-        else:
-            self.human_motion = None
-            self.human_joints = None
-            self.hybrid_motion_upper_body = None
-            self.hybrid_motion_lower_body = None
 
         if self.has_dynamic_object:
             self.motion_object_poss = self._lerp(
@@ -513,6 +472,7 @@ def run_simulator(args_cli: DataConversionConfig):
             "body_quat_w": [],
             "body_lin_vel_w": [],
             "body_ang_vel_w": [],
+            "_sonic_joint_anchor_pos_w": [],
             "object_pos_w": [],
             "object_quat_w": [],
             "object_lin_vel_w": [],
@@ -527,20 +487,9 @@ def run_simulator(args_cli: DataConversionConfig):
             "body_quat_w": [],
             "body_lin_vel_w": [],
             "body_ang_vel_w": [],
+            "_sonic_joint_anchor_pos_w": [],
         }
 
-    # If input npz includes SONIC command streams, carry them into the converted output.
-    has_sonic_cmd = bool(getattr(motion, "has_sonic_command_streams", False))
-    if has_sonic_cmd:
-        log.update(
-            {
-                "human_motion": [],
-                "hybrid_motion_upper_body": [],
-                "hybrid_motion_lower_body": [],
-            }
-        )
-        if getattr(motion, "human_joints", None) is not None:
-            log["human_joints"] = []
     file_saved = False
     # --------------------------------------------------------------------------
 
@@ -639,17 +588,11 @@ def run_simulator(args_cli: DataConversionConfig):
             log["body_lin_vel_w"].append(lin_vel_w[:].copy())
             log["body_ang_vel_w"].append(ang_vel_w[:].copy())
 
-            if has_sonic_cmd:
-                idx = motion.current_idx - 1
-                log["human_motion"].append(motion.human_motion[idx].detach().cpu().numpy().copy())
-                log["hybrid_motion_upper_body"].append(
-                    motion.hybrid_motion_upper_body[idx].detach().cpu().numpy().copy()
-                )
-                log["hybrid_motion_lower_body"].append(
-                    motion.hybrid_motion_lower_body[idx].detach().cpu().numpy().copy()
-                )
-                if getattr(motion, "human_joints", None) is not None:
-                    log["human_joints"].append(motion.human_joints[idx].detach().cpu().numpy().copy())
+            # Joint anchors for DOF joints (exclude root free joint; exclude object joint if present).
+            if has_dynamic_object:
+                log["_sonic_joint_anchor_pos_w"].append(robot_data.xanchor[1:-1].copy())
+            else:
+                log["_sonic_joint_anchor_pos_w"].append(robot_data.xanchor[1:].copy())
 
         if reset_flag and not file_saved:
             file_saved = True
@@ -663,11 +606,59 @@ def run_simulator(args_cli: DataConversionConfig):
             ):
                 log[k] = np.stack(log[k], axis=0)[:]
 
-            if has_sonic_cmd:
-                for k in ("human_motion", "hybrid_motion_upper_body", "hybrid_motion_lower_body"):
-                    log[k] = np.stack(log[k], axis=0)[:]
-                if "human_joints" in log:
-                    log["human_joints"] = np.stack(log["human_joints"], axis=0)[:]
+            log["_sonic_joint_anchor_pos_w"] = np.stack(log["_sonic_joint_anchor_pos_w"], axis=0).astype(np.float32)
+
+            # --- SONIC command signals derived from qpos via FK ---
+            body_names = [mujoco.mj_id2name(robot, mujoco.mjtObj.mjOBJ_BODY, i) for i in range(robot.nbody)]
+
+            root_name = getattr(args_cli, "sonic_root_body_name", "pelvis")
+            if root_name in body_names:
+                root_idx = body_names.index(root_name)
+            else:
+                # fallbacks for common models
+                for cand in ("pelvis", "base", "base_link", "torso_link"):
+                    if cand in body_names:
+                        root_name = cand
+                        root_idx = body_names.index(cand)
+                        break
+                else:
+                    root_idx = 0
+                    root_name = body_names[0]
+
+            body_pos_w = log["body_pos_w"].astype(np.float32)
+            body_lin_vel_w = log["body_lin_vel_w"].astype(np.float32)
+
+            root_pos = body_pos_w[:, root_idx : root_idx + 1, :]
+            root_vel = body_lin_vel_w[:, root_idx : root_idx + 1, :]
+
+            log["sonic_root_body_name"] = np.array([root_name])
+            log["sonic_body_pos_rel_root"] = body_pos_w - root_pos
+            log["sonic_body_lin_vel_rel_root"] = body_lin_vel_w - root_vel
+
+            # --- SONIC human joint command signals (per DOF joint) ---
+            joint_anchor_w = log["_sonic_joint_anchor_pos_w"]  # (T, J, 3)
+            log["sonic_joint_pos_rel_root"] = joint_anchor_w - root_pos
+
+            fps = float(log["fps"][0])
+            joint_anchor_vel_w = np.zeros_like(joint_anchor_w, dtype=np.float32)
+            if joint_anchor_w.shape[0] >= 2:
+                joint_anchor_vel_w[:-1] = (joint_anchor_w[1:] - joint_anchor_w[:-1]) * fps
+                joint_anchor_vel_w[-1] = joint_anchor_vel_w[-2]
+            log["sonic_joint_lin_vel_rel_root"] = joint_anchor_vel_w - root_vel
+
+            upper_names = list(getattr(args_cli, "sonic_hybrid_upper_body_names", []))
+            if len(upper_names) != 3:
+                raise ValueError("sonic_hybrid_upper_body_names must have exactly 3 body names")
+            missing = [n for n in upper_names if n not in body_names]
+            if missing:
+                raise ValueError(
+                    "Missing hybrid upper-body names in MuJoCo model body list: "
+                    f"{missing}. Available includes: {body_names[:10]} ..."
+                )
+            upper_idx = [body_names.index(n) for n in upper_names]
+            log["sonic_hybrid_upper_body_names"] = np.array(upper_names)
+            log["sonic_hybrid_upper_pos_rel_root"] = log["sonic_body_pos_rel_root"][:, upper_idx, :]
+            log["sonic_hybrid_upper_vel_rel_root"] = log["sonic_body_lin_vel_rel_root"][:, upper_idx, :]
 
             if has_dynamic_object:
                 for k in (
@@ -681,14 +672,19 @@ def run_simulator(args_cli: DataConversionConfig):
             # Add joint names and body names to the log
             # Names for qpos/qvel follow joint order
             joint_names = [mujoco.mj_id2name(robot, mujoco.mjtObj.mjOBJ_JOINT, i) for i in range(robot.njnt)]
-            body_names = [mujoco.mj_id2name(robot, mujoco.mjtObj.mjOBJ_BODY, i) for i in range(robot.nbody)]
 
             if has_dynamic_object:
                 log["joint_names"] = joint_names[1:-1]  # remove the root free joint name and the object joint name
             else:
                 log["joint_names"] = joint_names[1:]  # remove the root free joint name
 
+            # Store joint names explicitly for SONIC joint command alignment.
+            log["sonic_joint_names"] = np.array(log["joint_names"])
+
             log["body_names"] = body_names
+
+            # Remove internal temporary field.
+            log.pop("_sonic_joint_anchor_pos_w", None)
 
             if args_cli.output_name is None:
                 raise ValueError("output_name cannot be None")

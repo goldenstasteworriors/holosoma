@@ -4,6 +4,8 @@ Baseline is copied from Whole Body Tracking (WBT) so we can introduce SONIC
 tracker changes without touching existing WBT experiments.
 """
 
+import os
+
 from dataclasses import replace
 
 from holosoma.config_types.command import CommandManagerCfg, CommandTermCfg, MotionConfig, NoiseToInitialPoseConfig
@@ -13,13 +15,17 @@ init_pose_config = NoiseToInitialPoseConfig(
     dof_pos=0.1,
     root_pos=[0.05, 0.05, 0.01],
     root_rot=[0.1, 0.1, 0.2],
-    root_lin_vel=[0.1, 0.1, 0.05],
-    root_ang_vel=[0.1, 0.1, 0.1],
+    # Table 2: Root velocity perturbations (external pushes)
+    root_lin_vel=[0.5, 0.5, 0.2],
+    root_ang_vel=[0.52, 0.52, 0.78],
     object_pos=[0.05, 0.05, 0.0],
 )
 
 motion_config = MotionConfig(
-    motion_file="holosoma/data/motions/g1_29dof/whole_body_tracking/sub3_largebox_003_mj.npz",
+    motion_file=os.environ.get(
+        "HOLOSOMA_SONIC_MOTION_FILE",
+        "holosoma/data/motions/g1_29dof/whole_body_tracking/sub3_largebox_003_mj.npz",
+    ),
     body_names_to_track=[
         "pelvis",
         "left_hip_roll_link",
@@ -37,7 +43,11 @@ motion_config = MotionConfig(
         "right_wrist_yaw_link",
     ],
     body_name_ref=["torso_link"],
-    use_adaptive_timesteps_sampler=False,
+    # Table 4: bin-based adaptive motion sampling
+    use_adaptive_timesteps_sampler=True,
+    adaptive_sampling_bin_size_s=1.0,
+    adaptive_sampling_failure_rate_cap_beta=200.0,
+    adaptive_sampling_blending_alpha=0.1,
     noise_to_initial_pose=init_pose_config,
 )
 
@@ -61,6 +71,9 @@ g1_29dof_sonic_command = CommandManagerCfg(
                 "human_window_dt_s": 0.02,
                 # sample robot/human/hybrid per episode
                 "command_type_probs": [0.34, 0.33, 0.33],
+                # hybrid upper-body keypoints: head + hands (G1 model has no explicit head body,
+                # so torso_link is used as a head proxy)
+                "hybrid_upper_body_names": ["torso_link", "left_rubber_hand_link", "right_rubber_hand_link"],
             },
         ),
     },

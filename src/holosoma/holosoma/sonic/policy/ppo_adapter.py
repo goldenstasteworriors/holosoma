@@ -53,6 +53,8 @@ class UniversalSonicPolicyActorAdapter(torch.nn.Module):
         *,
         action_dim: int,
         decoder_hidden_dims: list[int],
+        control_decoder_hidden_dims: list[int] | None = None,
+        motion_decoder_hidden_dims: list[int] | None = None,
         latent_dim: int,
         cfg: SonicUniversalActorCfg | None = None,
         robot_encoder_hidden_dims: list[int] | None = None,
@@ -61,8 +63,26 @@ class UniversalSonicPolicyActorAdapter(torch.nn.Module):
     ):
         super().__init__()
 
+        # NOTE: This adapter builds the internal SONIC policy lazily on the first
+        # forward pass (since dr/dh/dm are only known then). If the adapter gets
+        # moved to a device (e.g., CUDA) before the first forward, lazily-built
+        # modules would otherwise remain on CPU and cause device-mismatch errors.
+        # This buffer moves with `.to(device)` and lets us place lazy modules on
+        # the correct device when they are created.
+        self.register_buffer("_device_anchor", torch.empty(0), persistent=False)
+
         self.action_dim = int(action_dim)
         self.decoder_hidden_dims = list(decoder_hidden_dims)
+        self.control_decoder_hidden_dims = (
+            list(control_decoder_hidden_dims)
+            if control_decoder_hidden_dims is not None
+            else list(self.decoder_hidden_dims)
+        )
+        self.motion_decoder_hidden_dims = (
+            list(motion_decoder_hidden_dims)
+            if motion_decoder_hidden_dims is not None
+            else list(self.decoder_hidden_dims)
+        )
         self.latent_dim = int(latent_dim)
         self.cfg = cfg or SonicUniversalActorCfg(latent_dim=self.latent_dim)
 
@@ -120,16 +140,79 @@ class UniversalSonicPolicyActorAdapter(torch.nn.Module):
             control_decoder=ControlDecoderMLP(
                 token_dim=self.latent_dim,
                 action_dim=self.action_dim,
-                hidden_dims=self.decoder_hidden_dims,
+                hidden_dims=self.control_decoder_hidden_dims,
             ),
             motion_decoder=MotionDecoderMLP(
                 token_dim=self.latent_dim,
                 recon_dim=dr,
-                hidden_dims=self.decoder_hidden_dims,
+                hidden_dims=self.motion_decoder_hidden_dims,
             ),
         )
         self.policy = UniversalSonicPolicy(modules)
+        self.policy.to(self._device_anchor.device)
         self._built = True
+
+    def _maybe_build_from_state_dict(self, state_dict: dict[str, torch.Tensor], *, prefix: str = "") -> None:
+        if self._built:
+            return
+
+        # Infer modality dims from the first Linear layer weights.
+        try:
+            w_r = state_dict.get(prefix + "policy.robot_encoder.net.0.weight")
+            w_h = state_dict.get(prefix + "policy.human_encoder.net.0.weight")
+            w_m = state_dict.get(prefix + "policy.hybrid_encoder.net.0.weight")
+            if w_r is not None and w_h is not None and w_m is not None:
+                dr = int(w_r.shape[1])
+                dh = int(w_h.shape[1])
+                dm = int(w_m.shape[1])
+                if dr > 0 and dh > 0 and dm > 0:
+                    self._build_once(dr=dr, dh=dh, dm=dm)
+        except Exception:
+            # Fall back to default behavior if inference fails.
+            return
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        # Called during recursive parent `load_state_dict`. Build lazy SONIC
+        # modules before default loading so `policy.*` keys become expected.
+        if not self._built:
+            self._maybe_build_from_state_dict(state_dict, prefix=prefix)
+
+        return super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
+
+    def load_state_dict(self, state_dict, strict: bool = True):  # type: ignore[override]
+        """Load state dict for lazily-built SONIC modules.
+
+        The SONIC universal policy modules are created on the first forward pass
+        based on (dr, dh, dm) parsed from the observation bundle header.
+
+        When resuming from checkpoint, the adapter is constructed in an
+        un-built state, but the checkpoint contains `policy.*` parameters.
+        If we call the default `load_state_dict` directly, these keys appear as
+        unexpected. To support resume/eval/export, infer (dr, dh, dm) from the
+        checkpoint weights and build the modules before loading.
+        """
+
+        if not self._built:
+            self._maybe_build_from_state_dict(state_dict, prefix="")
+
+        return super().load_state_dict(state_dict, strict=strict)
 
     def get_aux_losses(self) -> dict[str, torch.Tensor]:
         return dict(self._last_aux_losses)
@@ -232,8 +315,10 @@ def build_sonic_universal_actor_mean(
     robot_encoder_hidden_dims: list[int] | None = None,
     human_encoder_hidden_dims: list[int] | None = None,
     hybrid_encoder_hidden_dims: list[int] | None = None,
+    control_decoder_hidden_dims: list[int] | None = None,
+    motion_decoder_hidden_dims: list[int] | None = None,
     fsq_enabled: bool = True,
-    fsq_levels: int = 8,
+    fsq_levels: int | list[int] = 8,
     recon_coef: float = 1.0,
     token_coef: float = 1.0,
     cycle_coef: float = 1.0,
@@ -248,7 +333,7 @@ def build_sonic_universal_actor_mean(
     cfg = SonicUniversalActorCfg(
         latent_dim=latent_dim,
         fsq_enabled=bool(fsq_enabled),
-        fsq_levels=int(fsq_levels),
+        fsq_levels=fsq_levels,
         recon_coef=float(recon_coef),
         token_coef=float(token_coef),
         cycle_coef=float(cycle_coef),
@@ -256,6 +341,8 @@ def build_sonic_universal_actor_mean(
     return UniversalSonicPolicyActorAdapter(
         action_dim=output_dim,
         decoder_hidden_dims=hidden_dims,
+        control_decoder_hidden_dims=control_decoder_hidden_dims,
+        motion_decoder_hidden_dims=motion_decoder_hidden_dims,
         latent_dim=latent_dim,
         cfg=cfg,
         robot_encoder_hidden_dims=robot_encoder_hidden_dims,

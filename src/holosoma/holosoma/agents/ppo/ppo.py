@@ -289,14 +289,26 @@ class PPO(BaseAlgo):
 
             if it % self.config.save_interval == 0 and self.is_main_process:
                 self.save(os.path.join(self.log_dir, f"model_{it:05d}.pt"))
-                self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{it:05d}.onnx"))
+                if getattr(self, "export_onnx", True):
+                    self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{it:05d}.onnx"))
 
         if self.is_main_process:
             self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration:05d}.pt"))
-            self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{self.current_learning_iteration:05d}.onnx"))
+            if getattr(self, "export_onnx", True):
+                self.export(
+                    onnx_file_path=os.path.join(
+                        self.log_dir,
+                        f"model_{self.current_learning_iteration:05d}.onnx",
+                    )
+                )
 
     def _rollout_step(self, obs_dict):
-        with torch.inference_mode():
+        # NOTE: Do not use `torch.inference_mode()` here.
+        # RolloutStorage performs in-place copies into preallocated buffers.
+        # Mutating tensors under inference-mode can mark them as inference tensors,
+        # which later breaks training when autograd needs to save inputs for backward.
+        # `no_grad()` gives the intended speedup without producing inference tensors.
+        with torch.no_grad():
             for _ in range(self.config.num_steps_per_env):
                 # Environment step
                 actor_obs = torch.cat([obs_dict[k] for k in self.actor_obs_keys], dim=1)

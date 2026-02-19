@@ -14,14 +14,16 @@ robot_state_dr_at_setup = {
     "randomize_base_com_startup": RandomizationTermCfg(
         func="holosoma.managers.randomization.terms.locomotion:randomize_base_com_startup",
         params={
-            "base_com_range": {"x": [-0.025, 0.025], "y": [-0.05, 0.05], "z": [-0.05, 0.05]},
+            # Table 2: Base COM offset (x,y,z)
+            "base_com_range": {"x": [-0.075, 0.075], "y": [-0.1, 0.1], "z": [-0.1, 0.1]},
             "enabled": True,
         },
     ),
     "setup_dof_pos_bias": RandomizationTermCfg(
         func="holosoma.managers.randomization.terms.locomotion:setup_dof_pos_bias",
         params={
-            "dof_pos_bias_range": [-0.025, 0.025],
+            # Table 2: Default joint positions q0 ~ q0 + U[-0.01, 0.01]
+            "dof_pos_bias_range": [-0.01, 0.01],
             "enabled": True,
         },
     ),
@@ -104,7 +106,7 @@ base_reset_terms = {
         params={
             "joint_pos_scale_range": [1.0, 1.0],
             "joint_vel_range": [0.0, 0.0],
-            "joint_pos_bias_range": [-0.025, 0.025],
+            "joint_pos_bias_range": [-0.01, 0.01],
             "randomize_dof_pos_bias": True,
         },
     ),

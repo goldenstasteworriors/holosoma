@@ -99,6 +99,15 @@ class MotionConfig:
     use_adaptive_timesteps_sampler: bool = False
     """During training, whether to prioritize training on motion segments where the robot fails often."""
 
+    adaptive_sampling_bin_size_s: float = 1.0
+    """Adaptive sampling bin size in seconds (Table 4). Only used when `use_adaptive_timesteps_sampler` is True."""
+
+    adaptive_sampling_failure_rate_cap_beta: float = 200.0
+    """Adaptive sampling failure-rate cap multiplier beta (Table 4). Only used when enabled."""
+
+    adaptive_sampling_blending_alpha: float = 0.1
+    """Adaptive sampling blending hyperparameter alpha (Table 4). Only used when enabled."""
+
     start_at_timestep_zero_prob: float = 0.2
     """Probability of starting at timestep zero."""
 

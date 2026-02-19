@@ -278,6 +278,9 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
             log_dir=experiment_save_dir,
             multi_gpu_cfg=distributed_conf,
         )
+        # Respect ExperimentConfig.training.export_onnx during training.
+        # (Evaluation can still export via eval_agent.py.)
+        algo.export_onnx = bool(getattr(tyro_config.training, "export_onnx", True))
         algo.setup()
         algo.attach_checkpoint_metadata(tyro_config, wandb_run_path)
         if tyro_config.training.checkpoint is not None:

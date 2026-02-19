@@ -16,6 +16,10 @@ class BaseAlgo:
         self.config = config
         self.device = device
 
+        # Whether to export ONNX during training. This is set by the entrypoints
+        # (e.g. train_agent.py) based on ExperimentConfig.training.export_onnx.
+        self.export_onnx: bool = True
+
         self.is_multi_gpu = multi_gpu_cfg is not None
         if multi_gpu_cfg is not None:
             self.gpu_global_rank = multi_gpu_cfg["global_rank"]

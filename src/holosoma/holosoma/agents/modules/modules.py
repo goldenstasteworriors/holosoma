@@ -372,6 +372,8 @@ class BaseModule(nn.Module):
                 robot_encoder_hidden_dims=layer_config.robot_encoder_hidden_dims,
                 human_encoder_hidden_dims=layer_config.human_encoder_hidden_dims,
                 hybrid_encoder_hidden_dims=layer_config.hybrid_encoder_hidden_dims,
+                control_decoder_hidden_dims=layer_config.sonic_control_decoder_hidden_dims,
+                motion_decoder_hidden_dims=layer_config.sonic_motion_decoder_hidden_dims,
                 fsq_enabled=layer_config.sonic_fsq_enabled,
                 fsq_levels=layer_config.sonic_fsq_levels,
                 recon_coef=layer_config.sonic_recon_coef,

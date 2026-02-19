@@ -37,7 +37,8 @@ class MujocoSceneManager:
             Simulator configuration containing physics and rendering parameters.
         """
         self.world_spec = mujoco.MjSpec()
-        self.world_spec.copy_during_attach = True
+        if hasattr(self.world_spec, "copy_during_attach"):
+            self.world_spec.copy_during_attach = True
         self._setup_world_options(simulator_config)
         self.robot_config: RobotConfig | None = None  # Set when adding robot
 

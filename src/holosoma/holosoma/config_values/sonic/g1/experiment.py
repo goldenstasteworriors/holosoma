@@ -16,7 +16,8 @@ g1_29dof_sonic = ExperimentConfig(
     training=TrainingConfig(
         project="SONIC",
         name="g1_29dof_sonic_manager",
-        num_envs=8192,
+        # Table 4: Num parallel envs per GPU
+        num_envs=4096,
     ),
     env_class="holosoma.envs.sonic.sonic_manager.SonicTrackingManager",
     algo=replace(
@@ -25,8 +26,24 @@ g1_29dof_sonic = ExperimentConfig(
             algo.ppo.config,
             num_learning_iterations=40000,
             save_interval=4000,
-            entropy_coef=0.005,
-            init_noise_std=1.0,
+            # Table 4
+            num_learning_epochs=5,
+            num_mini_batches=4,
+            num_steps_per_env=24,
+            gamma=0.99,
+            lam=0.95,
+            clip_param=0.2,
+            entropy_coef=0.013,
+            value_loss_coef=1.0,
+            desired_kl=0.01,
+            actor_learning_rate=2e-5,
+            critic_learning_rate=1e-3,
+            max_grad_norm=0.1,
+            min_actor_learning_rate=1e-5,
+            max_actor_learning_rate=2e-4,
+            min_critic_learning_rate=1e-5,
+            max_critic_learning_rate=2e-4,
+            init_noise_std=0.05,
             init_at_random_ep_len=False,
             use_symmetry=False,
             actor_optimizer=replace(algo.ppo.config.actor_optimizer, weight_decay=0.000),
@@ -36,6 +53,9 @@ g1_29dof_sonic = ExperimentConfig(
                 actor=replace(
                     algo.ppo.config.module_dict.actor,
                     type="SonicUniversal",
+                    # Table 4: Actor std clamp min/max
+                    min_noise_std=0.001,
+                    max_noise_std=0.5,
                     # Reuse existing LayerConfig fields:
                     # - hidden_dims: used by encoder+decoder MLPs
                     # - encoder_output_dim: used as latent/token dimension
@@ -47,6 +67,22 @@ g1_29dof_sonic = ExperimentConfig(
                         sonic_recon_coef=1.0,
                         sonic_token_coef=1.0,
                         sonic_cycle_coef=1.0,
+                        # Table 3: encoders hidden=[2048,1024,512,512]
+                        robot_encoder_hidden_dims=[2048, 1024, 512, 512],
+                        human_encoder_hidden_dims=[2048, 1024, 512, 512],
+                        hybrid_encoder_hidden_dims=[2048, 1024, 512, 512],
+                        # Table 3: action decoder hidden=[2048,2048,1024,1024,512,512]
+                        hidden_dims=[2048, 2048, 1024, 1024, 512, 512],
+                        # Table 3: refs decoder hidden=[2048,1024,512,512]
+                        sonic_motion_decoder_hidden_dims=[2048, 1024, 512, 512],
+                    ),
+                ),
+                critic=replace(
+                    algo.ppo.config.module_dict.critic,
+                    layer_config=replace(
+                        algo.ppo.config.module_dict.critic.layer_config,
+                        # Table 3: critic hidden matches action decoder.
+                        hidden_dims=[2048, 2048, 1024, 1024, 512, 512],
                     ),
                 ),
             ),

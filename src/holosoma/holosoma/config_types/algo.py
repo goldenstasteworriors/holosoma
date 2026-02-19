@@ -69,6 +69,12 @@ class LayerConfig:
     sonic_cycle_coef: float = 1.0
     """Auxiliary cycle-consistency loss coefficient for SONIC (SonicUniversal)."""
 
+    sonic_control_decoder_hidden_dims: List[int] | None = None
+    """Hidden dims for SONIC control decoder MLP (actions). If None, reuse `hidden_dims`."""
+
+    sonic_motion_decoder_hidden_dims: List[int] | None = None
+    """Hidden dims for SONIC motion decoder MLP (reconstruction). If None, reuse `hidden_dims`."""
+
     encoder_input_name: str = ""
     """Input name for encoder. Only used for encoder modules."""
 
@@ -115,6 +121,9 @@ class ModuleConfig:
 
     min_noise_std: float | None = None
     """Minimum noise standard deviation."""
+
+    max_noise_std: float | None = None
+    """Maximum noise standard deviation."""
 
     min_mean_noise_std: float | None = None
     """Minimum mean noise standard deviation."""

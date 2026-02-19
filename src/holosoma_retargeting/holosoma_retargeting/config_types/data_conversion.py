@@ -86,6 +86,19 @@ class DataConversionConfig:
     realtime: bool = True
     """If True, throttle the loop to match motion dt (useful for viewing)."""
 
+    # --- SONIC command derivation (computed during conversion from qpos via MuJoCo FK) ---
+    sonic_root_body_name: str = "pelvis"
+    """Root body name used to compute root-relative human/hybrid commands."""
+
+    sonic_hybrid_upper_body_names: list[str] = field(
+        default_factory=lambda: ["torso_link", "left_rubber_hand_link", "right_rubber_hand_link"]
+    )
+    """Hybrid upper-body keypoints (3 bodies): [head, left hand, right hand].
+
+    Note: the G1 MuJoCo model used here does not have an explicit head body,
+    so we use torso_link as a practical head proxy.
+    """
+
     use_omniretarget_data: bool = False
     """Use OmniRetarget data format."""
 

@@ -387,11 +387,17 @@ class SceneConfig:
     asset_root: str | None = None
     """Optional root directory for relative asset paths."""
 
-    scene_files: list[SceneFileConfig] | None = None  # Renamed from sources
-    """List of scene files (USD/URDF) to load."""
+    scene_files: list[SceneFileConfig] = field(default_factory=list)  # Renamed from sources
+    """List of scene files (USD/URDF) to load.
 
-    rigid_objects: list[RigidObjectConfig] | None = None
-    """Standalone rigid objects to instantiate."""
+    An empty list means "no scene files configured".
+    """
+
+    rigid_objects: list[RigidObjectConfig] = field(default_factory=list)
+    """Standalone rigid objects to instantiate.
+
+    An empty list means "no rigid objects configured".
+    """
 
     env_spacing: float = 20.0
     """Distance between parallel environments in the grid layout."""

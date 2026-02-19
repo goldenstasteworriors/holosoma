@@ -20,6 +20,16 @@ def _find_input_dim_from_module(module: torch.nn.Module) -> int:
     """
     # Strategy 1: PPO-style - actor_module.module (torch.nn.Sequential)
     if hasattr(module, "actor_module") and hasattr(module.actor_module, "module"):
+        # Prefer the explicitly computed input dimension when available.
+        # For PPO, `actor_module` is typically a `BaseModule` which tracks the
+        # full concatenated observation dimension (including history), whereas
+        # scanning for the first Linear layer can return SONIC modality dims.
+        if hasattr(module.actor_module, "input_dim"):
+            try:
+                return int(module.actor_module.input_dim)
+            except Exception:
+                pass
+
         core_model = module.actor_module.module
         # Common case: torch.nn.Sequential
         if isinstance(core_model, torch.nn.Sequential) and len(core_model) > 0:
@@ -97,6 +107,51 @@ def _extract_actor_model_and_input_dim(actor_wrapper) -> Tuple[torch.nn.Module, 
     return inner_actor, input_dim
 
 
+def _find_first_linear_in_features(module: torch.nn.Module) -> int | None:
+    for submodule in module.modules():
+        if isinstance(submodule, torch.nn.Linear):
+            return int(submodule.in_features)
+    return None
+
+
+def _infer_sonic_bundle_dims_from_actor(actor: object) -> tuple[int, int, int] | None:
+    """Infer SONIC bundle dims (dr, dh, dm) from a trained model.
+
+    SONIC's universal-policy adapter lazily builds modality-specific encoders
+    on first forward based on the bundle header. During ONNX export we may have
+    access to the live, already-built model (with trained weights). In that
+    case, we prefer the *model's* encoder input dims over env motion-command
+    dims to avoid mismatches.
+    """
+
+    try:
+        from holosoma.sonic.policy.ppo_adapter import UniversalSonicPolicyActorAdapter
+    except Exception:
+        return None
+
+    if not isinstance(actor, torch.nn.Module):
+        return None
+
+    for m in actor.modules():
+        if not isinstance(m, UniversalSonicPolicyActorAdapter):
+            continue
+        policy = getattr(m, "policy", None)
+        if policy is None:
+            continue
+
+        dr = _find_first_linear_in_features(getattr(policy, "robot_encoder", None))
+        dh = _find_first_linear_in_features(getattr(policy, "human_encoder", None))
+        dm = _find_first_linear_in_features(getattr(policy, "hybrid_encoder", None))
+
+        if dr is None or dh is None or dm is None:
+            continue
+        if dr <= 0 or dh <= 0 or dm <= 0:
+            continue
+        return (dr, dh, dm)
+
+    return None
+
+
 def export_policy_as_onnx(wrapper, onnx_file_path: str, example_obs_dict):
     # Ensure parent directory exists
     os.makedirs(Path(onnx_file_path).parent, exist_ok=True)
@@ -117,6 +172,10 @@ def export_policy_as_onnx(wrapper, onnx_file_path: str, example_obs_dict):
         verbose=False,
         input_names=["actor_obs"],  # Specify the input names
         output_names=["action"],  # Name the output
+        dynamic_axes={
+            "actor_obs": {0: "batch"},
+            "action": {0: "batch"},
+        },
         opset_version=13,
         dynamo=False,
     )
@@ -157,6 +216,27 @@ class _OnnxMotionPolicyExporter(torch.nn.Module):
         actor_model, self.input_dim = _extract_actor_model_and_input_dim(actor)
         # Wrap the actor to handle different return signatures
         self._wrapped_actor = self._create_actor_wrapper(actor_model)
+
+        # If the actor is a SONIC universal-policy adapter, it expects a
+        # self-describing command bundle header at the start of the observation.
+        # During export we otherwise feed all-zeros, which would be parsed as
+        # dr=dh=dm=0 and crash while tracing.
+        #
+        # IMPORTANT: prefer the *trained model's* built encoder input dims when
+        # available. This avoids export-time mismatches if env motion-command
+        # dims differ from the model that was actually trained.
+        self._sonic_bundle_dims: tuple[int, int, int] | None = _infer_sonic_bundle_dims_from_actor(actor)
+        if self._sonic_bundle_dims is None and hasattr(motion_command, "robot_command") and hasattr(
+            motion_command, "human_command"
+        ) and hasattr(motion_command, "hybrid_command"):
+            try:
+                dr = int(motion_command.robot_command.shape[1])
+                dh = int(motion_command.human_command.shape[1])
+                dm = int(motion_command.hybrid_command.shape[1])
+                if dr > 0 and dh > 0 and dm > 0:
+                    self._sonic_bundle_dims = (dr, dh, dm)
+            except Exception:
+                self._sonic_bundle_dims = None
 
         motion = motion_command.motion
 
@@ -212,6 +292,18 @@ class _OnnxMotionPolicyExporter(torch.nn.Module):
         os.makedirs(onnx_file_dir, exist_ok=True)
         self.to("cpu")
         obs = torch.zeros(1, self.input_dim)
+
+        # Seed SONIC bundle header if applicable.
+        if self._sonic_bundle_dims is not None and obs.shape[1] >= 6:
+            dr, dh, dm = self._sonic_bundle_dims
+            # Header layout: [dr, dh, dm, onehot(3), ...]
+            obs[0, 0] = float(dr)
+            obs[0, 1] = float(dh)
+            obs[0, 2] = float(dm)
+            # Default to robot command for tracing.
+            obs[0, 3] = 1.0
+            obs[0, 4] = 0.0
+            obs[0, 5] = 0.0
         time_step = torch.zeros(1, 1)
         torch.onnx.export(
             self,

@@ -80,6 +80,61 @@ class MotionLoader:
             self._body_lin_vel_w = torch.tensor(data["body_lin_vel_w"], dtype=torch.float32, device=device)
             self._body_ang_vel_w = torch.tensor(data["body_ang_vel_w"], dtype=torch.float32, device=device)
 
+            # SONIC command signals derived during conversion (preferred).
+            self.has_sonic_command_signals = ("sonic_body_pos_rel_root" in data) and (
+                "sonic_body_lin_vel_rel_root" in data
+            )
+            if self.has_sonic_command_signals:
+                self._sonic_root_body_name = (
+                    str(data["sonic_root_body_name"].reshape(-1)[0]) if "sonic_root_body_name" in data else None
+                )
+                self._sonic_body_pos_rel_root = torch.tensor(
+                    data["sonic_body_pos_rel_root"], dtype=torch.float32, device=device
+                )
+                self._sonic_body_lin_vel_rel_root = torch.tensor(
+                    data["sonic_body_lin_vel_rel_root"], dtype=torch.float32, device=device
+                )
+
+                # Optional hybrid upper-body keypoints (3 bodies), already root-relative.
+                self._sonic_hybrid_upper_body_names = (
+                    data["sonic_hybrid_upper_body_names"].tolist() if "sonic_hybrid_upper_body_names" in data else None
+                )
+                self._sonic_hybrid_upper_pos_rel_root = (
+                    torch.tensor(data["sonic_hybrid_upper_pos_rel_root"], dtype=torch.float32, device=device)
+                    if "sonic_hybrid_upper_pos_rel_root" in data
+                    else None
+                )
+                self._sonic_hybrid_upper_vel_rel_root = (
+                    torch.tensor(data["sonic_hybrid_upper_vel_rel_root"], dtype=torch.float32, device=device)
+                    if "sonic_hybrid_upper_vel_rel_root" in data
+                    else None
+                )
+
+                # Optional: per-DOF joint anchor commands for SONIC human stream.
+                self._sonic_joint_names = (
+                    data["sonic_joint_names"].tolist() if "sonic_joint_names" in data else None
+                )
+                self._sonic_joint_pos_rel_root = (
+                    torch.tensor(data["sonic_joint_pos_rel_root"], dtype=torch.float32, device=device)
+                    if "sonic_joint_pos_rel_root" in data
+                    else None
+                )
+                self._sonic_joint_lin_vel_rel_root = (
+                    torch.tensor(data["sonic_joint_lin_vel_rel_root"], dtype=torch.float32, device=device)
+                    if "sonic_joint_lin_vel_rel_root" in data
+                    else None
+                )
+            else:
+                self._sonic_root_body_name = None
+                self._sonic_body_pos_rel_root = None
+                self._sonic_body_lin_vel_rel_root = None
+                self._sonic_hybrid_upper_body_names = None
+                self._sonic_hybrid_upper_pos_rel_root = None
+                self._sonic_hybrid_upper_vel_rel_root = None
+                self._sonic_joint_names = None
+                self._sonic_joint_pos_rel_root = None
+                self._sonic_joint_lin_vel_rel_root = None
+
             # Optional SONIC command streams (preprocessed from retargeting outputs).
             self.has_sonic_command_streams = (
                 ("human_motion" in data)
@@ -118,6 +173,50 @@ class MotionLoader:
                 self._object_quat_w = torch.zeros(0, 4, device=device)
                 self._object_lin_vel_w = torch.zeros(0, 3, device=device)
         return body_names, joint_names
+
+    @property
+    def sonic_root_body_name(self) -> str | None:
+        return self._sonic_root_body_name
+
+    @property
+    def sonic_body_pos_rel_root(self) -> torch.Tensor | None:
+        if self._sonic_body_pos_rel_root is None:
+            return None
+        return self._sonic_body_pos_rel_root[:, self._body_indexes]
+
+    @property
+    def sonic_body_lin_vel_rel_root(self) -> torch.Tensor | None:
+        if self._sonic_body_lin_vel_rel_root is None:
+            return None
+        return self._sonic_body_lin_vel_rel_root[:, self._body_indexes]
+
+    @property
+    def sonic_hybrid_upper_body_names(self) -> list[str] | None:
+        return self._sonic_hybrid_upper_body_names
+
+    @property
+    def sonic_hybrid_upper_pos_rel_root(self) -> torch.Tensor | None:
+        return self._sonic_hybrid_upper_pos_rel_root
+
+    @property
+    def sonic_hybrid_upper_vel_rel_root(self) -> torch.Tensor | None:
+        return self._sonic_hybrid_upper_vel_rel_root
+
+    @property
+    def sonic_joint_names(self) -> list[str] | None:
+        return self._sonic_joint_names
+
+    @property
+    def sonic_joint_pos_rel_root(self) -> torch.Tensor | None:
+        if self._sonic_joint_pos_rel_root is None:
+            return None
+        return self._sonic_joint_pos_rel_root[:, self._joint_indexes]
+
+    @property
+    def sonic_joint_lin_vel_rel_root(self) -> torch.Tensor | None:
+        if self._sonic_joint_lin_vel_rel_root is None:
+            return None
+        return self._sonic_joint_lin_vel_rel_root[:, self._joint_indexes]
 
     @property
     def human_motion(self) -> torch.Tensor | None:
@@ -173,6 +272,33 @@ class MotionLoader:
 
     def extend_with_segments(self, segments: dict[str, torch.Tensor], prepend: bool) -> MotionLoader:
         """Merge interpolated segments with motion data, mutating this MotionLoader."""
+        # NOTE: This method is used by MotionCommand's default-pose prepend/append.
+        # We must extend any auxiliary SONIC streams/signals as well; otherwise the
+        # clip length (`time_step_total`) grows while optional tensors remain at the
+        # original length, causing CUDA indexing out-of-bounds when sampling windows.
+        seg_len = int(segments["joint_pos"].shape[0])
+
+        def _repeat_boundary_frames(tensor: torch.Tensor, *, take_first: bool) -> torch.Tensor:
+            if tensor.ndim == 0:
+                raise ValueError("Expected tensor with time dimension")
+            if tensor.shape[0] == 0:
+                return tensor
+            boundary = tensor[:1] if take_first else tensor[-1:]
+            reps = (seg_len,) + (1,) * (tensor.ndim - 1)
+            return boundary.repeat(reps)
+
+        def _extend_optional(attr_name: str) -> None:
+            if seg_len <= 0:
+                return
+            existing = getattr(self, attr_name, None)
+            if existing is None:
+                return
+            if not isinstance(existing, torch.Tensor):
+                return
+            seg = _repeat_boundary_frames(existing, take_first=prepend)
+            tensors = (seg, existing) if prepend else (existing, seg)
+            setattr(self, attr_name, torch.cat(tensors, dim=0))
+
         concat_targets = [
             ("joint_pos", "_joint_pos"),
             ("joint_vel", "_joint_vel"),
@@ -195,6 +321,20 @@ class MotionLoader:
             tensors = (segments[seg_key], existing) if prepend else (existing, segments[seg_key])
             setattr(self, attr_name, torch.cat(tensors, dim=0))
 
+        # Extend optional SONIC command streams (preprocessed) to match new length.
+        _extend_optional("_human_motion")
+        _extend_optional("_human_joints")
+        _extend_optional("_hybrid_motion_upper_body")
+        _extend_optional("_hybrid_motion_lower_body")
+
+        # Extend optional conversion-derived SONIC command signals, if present.
+        _extend_optional("_sonic_body_pos_rel_root")
+        _extend_optional("_sonic_body_lin_vel_rel_root")
+        _extend_optional("_sonic_hybrid_upper_pos_rel_root")
+        _extend_optional("_sonic_hybrid_upper_vel_rel_root")
+        _extend_optional("_sonic_joint_pos_rel_root")
+        _extend_optional("_sonic_joint_lin_vel_rel_root")
+
         self.time_step_total = self._joint_pos.shape[0]
         return self
 
@@ -208,11 +348,9 @@ class AdaptiveTimestepsSampler:
         device: str,
         env_fps: int,
         bin_size_s: float = 1.0,
-        kernel_size: int = 3,
-        decay_lambda: float = 0.001,
-        kernel_lambda: float = 0.8,
+        failure_rate_cap_beta: float = 200.0,
+        blending_alpha: float = 0.1,
     ):
-        # TODO: think better about the decay_lambda, will 0.001 be too small?
         self.device = device
         # length of the motion in rl environment time steps
         self.motion_time_step_total = motion_time_step_total
@@ -221,60 +359,64 @@ class AdaptiveTimestepsSampler:
 
         # size of the bin in seconds
         self.bin_size_s = bin_size_s
-        # size of the kernel for smoothing the sampling probabilities
-        self.kernel_size = kernel_size
-        self.kernel_lambda = kernel_lambda
-        # exponential decay when updating the failure counts over training steps.
 
-        self.decay_lambda = decay_lambda
+        # SONIC Table 4 hyperparameters
+        self.failure_rate_cap_beta = failure_rate_cap_beta
+        self.blending_alpha = blending_alpha
 
         # number of bins in the motion
         self.num_bins = math.ceil((self.motion_time_step_total / self.env_fps) / self.bin_size_s)
 
-        # initialize exponential 1d decay kernel, used for smoothing the failure counts over time.
-        assert self.kernel_size % 2 == 1, "Kernel size must be odd"
-        self.kernel = torch.tensor(
-            [self.kernel_lambda ** abs(i) for i in range((-self.kernel_size + 1) // 2, (self.kernel_size + 1) // 2)],
-            device=self.device,
-        )
-        self.kernel = self.kernel / self.kernel.sum()
-
-        # key data: failure counts
+        # key data: per-bin sample/fail counts
         self.init_buffers()
         # metrics
         self.metrics: dict[str, torch.Tensor] = {}
 
     def init_buffers(self):
-        self.current_bin_failed_count = torch.zeros(self.num_bins, dtype=torch.float, device=self.device)
+        self.bin_sample_count = torch.zeros(self.num_bins, dtype=torch.float, device=self.device)
         self.bin_failed_count = torch.zeros(self.num_bins, dtype=torch.float, device=self.device)
 
     def update_current_bin_failed_count(self, failed_at_time_step: torch.Tensor):
-        """Update the current bin failed count with terminated time steps."""
+        """Update per-bin failure counts with terminated time steps."""
         failed_bin = torch.floor(failed_at_time_step / self.motion_time_step_total * self.num_bins).long()
         assert failed_bin.min() >= 0 and failed_bin.max() < self.num_bins, "Failed bin is out of range"
-        self.current_bin_failed_count[:] = torch.bincount(failed_bin, minlength=self.num_bins)
+        self.bin_failed_count += torch.bincount(failed_bin, minlength=self.num_bins).to(dtype=torch.float)
 
     def update_bin_failed_count(self):
-        """At every rl environment step, update the failed count with the current bin failed count."""
-        self.bin_failed_count = (self.decay_lambda * self.current_bin_failed_count) + (
-            1 - self.decay_lambda
-        ) * self.bin_failed_count
-        self.current_bin_failed_count.zero_()
+        """Backward-compatible no-op.
+
+        The SONIC paper defines sampling probabilities based on per-bin failure rates
+        and does not require per-step exponential smoothing in this implementation.
+        """
+        return
+
+    @property
+    def failure_rates(self) -> torch.Tensor:
+        return self.bin_failed_count / (self.bin_sample_count + 1e-6)
 
     @property
     def sampling_probabilities(self) -> torch.Tensor:
-        sampling_probabilities = self.bin_failed_count + 1e-6
-        sampling_probabilities = torch.nn.functional.pad(
-            sampling_probabilities.unsqueeze(0).unsqueeze(0),
-            (0, self.kernel_size - 1),  # Non-causal kernel
-            mode="replicate",
-        )
-        sampling_probabilities = torch.nn.functional.conv1d(sampling_probabilities, self.kernel.view(1, 1, -1)).view(-1)
-        sampling_probabilities += 0.01
-        return sampling_probabilities / sampling_probabilities.sum()
+        # SONIC paper: cap failure rate at beta * mean(f)
+        f = self.failure_rates
+        f_mean = f.mean()
+        cap = self.failure_rate_cap_beta * f_mean
+        f_capped = torch.minimum(f, cap)
+
+        # Normalize capped failure rates to preliminary weights p_hat
+        total = f_capped.sum()
+        if total <= 0:
+            p_hat = torch.ones_like(f_capped) / self.num_bins
+        else:
+            p_hat = f_capped / total
+
+        # Blend with uniform distribution: p = alpha * p_hat + (1-alpha)/N
+        uniform = torch.ones_like(p_hat) / self.num_bins
+        p = (self.blending_alpha * p_hat) + ((1.0 - self.blending_alpha) * uniform)
+        return p / p.sum()
 
     def sample(self, num_samples: int) -> torch.Tensor:
         sampled_bins = torch.multinomial(self.sampling_probabilities, num_samples, replacement=True)
+        self.bin_sample_count += torch.bincount(sampled_bins, minlength=self.num_bins).to(dtype=torch.float)
         # inside of each bin, randomly sample a time step, ignoring the borders
         return (sampled_bins + torch.rand(num_samples, device=self.device)) / self.num_bins
 
@@ -364,7 +506,12 @@ class MotionCommand(CommandTermBase):
         # 4. get the adaptive timesteps sampler
         if self.motion_cfg.use_adaptive_timesteps_sampler:
             self.adaptive_timesteps_sampler = AdaptiveTimestepsSampler(
-                self.motion.time_step_total, self.device, int(1 / (self._env.dt))
+                self.motion.time_step_total,
+                self.device,
+                int(1 / (self._env.dt)),
+                bin_size_s=self.motion_cfg.adaptive_sampling_bin_size_s,
+                failure_rate_cap_beta=self.motion_cfg.adaptive_sampling_failure_rate_cap_beta,
+                blending_alpha=self.motion_cfg.adaptive_sampling_blending_alpha,
             )
 
         # 5. metrics

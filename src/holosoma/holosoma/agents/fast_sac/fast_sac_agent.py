@@ -792,7 +792,8 @@ class FastSACAgent(BaseAlgo):
                     if self.is_main_process:
                         logger.info(f"Saving model at global step {self.global_step}")
                         self.save(os.path.join(self.log_dir, f"model_{self.global_step:07d}.pt"))
-                        self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{self.global_step:07d}.onnx"))
+                            if getattr(self, "export_onnx", True):
+                                self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{self.global_step:07d}.onnx"))
 
             # Avoid global_step being incremented beyond args.num_learning_iterations, so that the final checkpoint is
             # saved at exactly args.num_learning_iterations. In the `while` condition, we check for self.global_step <=
@@ -805,7 +806,8 @@ class FastSACAgent(BaseAlgo):
 
         if self.is_main_process:
             self.save(os.path.join(self.log_dir, f"model_{self.global_step:07d}.pt"))
-            self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{self.global_step:07d}.onnx"))
+                if getattr(self, "export_onnx", True):
+                    self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{self.global_step:07d}.onnx"))
 
     def save(self, path: str) -> None:  # type: ignore[override]
         env_state = self._collect_env_state()
