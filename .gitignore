@@ -33,6 +33,9 @@ ckpt
 src/holosoma/holosoma/data/robots/converted/
 src/holosoma/holosoma/data/robots/converted_rank*/
 
+# other repositry
+reference/
+
 # other
 *.egg-info
 __pycache__
