@@ -24,7 +24,9 @@ converted_res/
 demo_data/lafan/
 converted_res/
 data_utils/lafan1
-src/holosoma_retargeting/holosoma_retargeting/data_utils/test_result/
-src/holosoma_retargeting/holosoma_retargeting/data_utils/human_body_prior/
+
+data_utils/test_result/
+data_utils/human_body_prior/
+
 *.sh
 *.bvh
