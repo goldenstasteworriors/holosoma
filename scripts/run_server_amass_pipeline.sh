@@ -12,6 +12,8 @@ SUBDATASET_FOLDER="${SUBDATASET_FOLDER:-}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 MODEL_ROOT="${MODEL_ROOT:-}"
+HUMAN_BODY_PRIOR_DIR="${REPO_ROOT}/src/holosoma_retargeting/holosoma_retargeting/data_utils/human_body_prior"
+HUMAN_BODY_PRIOR_BODYMODEL="${HUMAN_BODY_PRIOR_DIR}/src/human_body_prior/body_model/body_model.py"
 
 detect_model_root() {
     local candidates=(
@@ -28,6 +30,32 @@ detect_model_root() {
         fi
     done
     return 1
+}
+
+ensure_human_body_prior() {
+    if [[ -f "${HUMAN_BODY_PRIOR_BODYMODEL}" ]]; then
+        return 0
+    fi
+
+    echo "未检测到 human_body_prior 源码，准备自动拉取到:"
+    echo "  ${HUMAN_BODY_PRIOR_DIR}"
+
+    if [[ -d "${HUMAN_BODY_PRIOR_DIR}" ]]; then
+        if find "${HUMAN_BODY_PRIOR_DIR}" -mindepth 1 -print -quit | grep -q .; then
+            echo "目录已存在但缺少关键文件:"
+            echo "  ${HUMAN_BODY_PRIOR_BODYMODEL}"
+            echo "请手动检查该目录内容后重试。"
+            exit 1
+        fi
+    fi
+
+    git clone --depth 1 https://github.com/nghorbani/human_body_prior.git "${HUMAN_BODY_PRIOR_DIR}"
+
+    if [[ ! -f "${HUMAN_BODY_PRIOR_BODYMODEL}" ]]; then
+        echo "human_body_prior 拉取后仍缺少关键文件:"
+        echo "  ${HUMAN_BODY_PRIOR_BODYMODEL}"
+        exit 1
+    fi
 }
 
 if [[ -z "${MODEL_ROOT}" ]]; then
@@ -76,6 +104,7 @@ echo "RETARGET_LOG=${RETARGET_LOG}"
 echo "PYTHON_BIN=$(command -v "${PYTHON_BIN}")"
 
 cd "${REPO_ROOT}"
+ensure_human_body_prior
 
 PREP_CMD=(
     "${PYTHON_BIN}"
