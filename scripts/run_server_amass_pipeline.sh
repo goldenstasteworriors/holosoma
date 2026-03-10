@@ -10,6 +10,7 @@ LOG_DIR="${LOG_DIR:-${REPO_ROOT}/logs/amass_pipeline}"
 MAX_WORKERS="${MAX_WORKERS:-}"
 SUBDATASET_FOLDER="${SUBDATASET_FOLDER:-}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
+RETARGET_WORKDIR="${RETARGET_WORKDIR:-${REPO_ROOT}/src/holosoma_retargeting/holosoma_retargeting}"
 
 MODEL_ROOT="${MODEL_ROOT:-}"
 HUMAN_BODY_PRIOR_DIR="${REPO_ROOT}/src/holosoma_retargeting/holosoma_retargeting/data_utils/human_body_prior"
@@ -87,6 +88,13 @@ if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
     exit 1
 fi
 
+PYTHON_BIN="$(command -v "${PYTHON_BIN}")"
+
+if [[ ! -d "${RETARGET_WORKDIR}" ]]; then
+    echo "RETARGET_WORKDIR 不存在: ${RETARGET_WORKDIR}"
+    exit 1
+fi
+
 mkdir -p "${PROCESSED_AMASS_DIR}" "${RETARGET_SAVE_DIR}" "${LOG_DIR}"
 
 PIPELINE_LOG="${LOG_DIR}/pipeline_$(date +%Y%m%d_%H%M%S).log"
@@ -101,7 +109,8 @@ echo "PROCESSED_AMASS_DIR=${PROCESSED_AMASS_DIR}"
 echo "RETARGET_SAVE_DIR=${RETARGET_SAVE_DIR}"
 echo "PIPELINE_LOG=${PIPELINE_LOG}"
 echo "RETARGET_LOG=${RETARGET_LOG}"
-echo "PYTHON_BIN=$(command -v "${PYTHON_BIN}")"
+echo "PYTHON_BIN=${PYTHON_BIN}"
+echo "RETARGET_WORKDIR=${RETARGET_WORKDIR}"
 
 cd "${REPO_ROOT}"
 ensure_human_body_prior
@@ -124,7 +133,7 @@ echo "[1/2] 预处理 AMASS SMPL-X"
 
 RETARGET_CMD=(
     "${PYTHON_BIN}"
-    src/holosoma_retargeting/holosoma_retargeting/examples/parallel_robot_retarget.py
+    examples/parallel_robot_retarget.py
     --data-dir "${PROCESSED_AMASS_DIR}"
     --task-type robot_only
     --data_format smplx
@@ -139,7 +148,9 @@ fi
 
 echo
 echo "[2/2] 后台启动并行 retarget"
+echo "工作目录: ${RETARGET_WORKDIR}"
 echo "命令: ${RETARGET_CMD[*]}"
+cd "${RETARGET_WORKDIR}"
 nohup "${RETARGET_CMD[@]}" > "${RETARGET_LOG}" 2>&1 &
 RETARGET_PID=$!
 
