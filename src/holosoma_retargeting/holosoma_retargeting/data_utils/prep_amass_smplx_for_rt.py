@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,12 +8,6 @@ from pathlib import Path
 import numpy as np
 import torch
 import tyro
-
-# Prefer the vendored human_body_prior checkout bundled with this repository.
-VENDORED_HUMAN_BODY_PRIOR_SRC = Path(__file__).resolve().parent / "human_body_prior" / "src"
-if VENDORED_HUMAN_BODY_PRIOR_SRC.exists():
-    sys.path.insert(0, str(VENDORED_HUMAN_BODY_PRIOR_SRC))
-
 from human_body_prior.body_model.body_model import BodyModel  # type: ignore[import-not-found]
 
 
