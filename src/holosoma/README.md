@@ -218,6 +218,8 @@ torchrun --nproc_per_node=4 src/holosoma/holosoma/train_agent.py \
     --training.num-envs 16384  # global/total number of environments
 ```
 
+For IsaacSim-based tasks launched via `torchrun` (for example WBT/SONIC), this repo now auto-detects `WORLD_SIZE>1` and enables IsaacLab's distributed `AppLauncher` mode so each rank uses its own GPU and per-process CPU thread limits.
+
 ### Custom Reward Weights
 
 ```bash

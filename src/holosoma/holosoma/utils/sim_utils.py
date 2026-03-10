@@ -87,9 +87,22 @@ def setup_isaaclab_launcher(config: ExperimentConfig | RunSimConfig, device: str
     args_cli.env_spacing = config.simulator.config.scene.env_spacing
     args_cli.output_dir = config.logger.base_dir
     args_cli.headless = config.training.headless
-    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
-        # Distribute simulator across GPUs when using multi-gpu training
-        args_cli.device = f"cuda:{int(os.environ.get('LOCAL_RANK', '0'))}"
+
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    is_distributed = world_size > 1
+    if is_distributed:
+        # IsaacLab's AppLauncher only enables its distributed safeguards
+        # (rank-aware device selection and per-process CPU thread caps)
+        # when the distributed flag is set. Our custom entrypoint is launched
+        # via torchrun, so we auto-enable that mode based on WORLD_SIZE.
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        args_cli.distributed = True
+        args_cli.device = f"cuda:{local_rank}"
+        logger.info(
+            "Detected torchrun launch for IsaacSim "
+            f"(WORLD_SIZE={world_size}, LOCAL_RANK={local_rank}). "
+            "Enabling IsaacLab distributed mode."
+        )
     elif device is not None:
         # Use the resolved device
         args_cli.device = device
