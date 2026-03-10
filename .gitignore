@@ -28,6 +28,7 @@ src/holosoma_retargeting/demo_results_parallel/
 src/holosoma_retargeting/converted_res/
 OmniRetarget
 ckpt
+src/holosoma_retargeting/holosoma_retargeting/data_utils/test_result
 
 # Isaacsim Converted Files
 src/holosoma/holosoma/data/robots/converted/
